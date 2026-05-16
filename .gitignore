@@ -1,3 +1,6 @@
+# Dev logs (local only)
+dev-logs/
+
 # Python virtual environment
 .venv/
 
