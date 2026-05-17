@@ -30,7 +30,7 @@ _NUMBER_RE = re.compile(r"^(\d+\.\d+)\s+(.*)$", re.DOTALL)
 _SECTION_NUM_RE = re.compile(r"^\s*(\d+)")
 # Require the figure to end on a digit so trailing punctuation ("$138,766,")
 # isn't swallowed into the captured amount.
-_COST_RE = re.compile(r"\$[\d,]*\d(?:\.\d{2})?")
+_DOLLAR_RE = re.compile(r"\$[\d,]*\d(?:\.\d{2})?")
 
 
 # --- Data model ------------------------------------------------------------
@@ -51,7 +51,11 @@ class AgendaItem:
     item_type: str       # the Type value, e.g. "Action (Consent)"
     recommended_action: str | None
     body: str            # itembody rendered to Markdown ("" if no itembody)
-    costs: list[str] = field(default_factory=list)        # verbatim "$" figures
+    # Every "$" amount found in the body, verbatim — NOT a single authoritative
+    # cost. Includes thresholds, per-unit rates, and even revenue (e.g. a lease
+    # the division collects). The headline figure lives in `recommended_action`
+    # or the body's labeled COST section; downstream code decides relevance.
+    dollar_figures: list[str] = field(default_factory=list)
     attachments: list[Attachment] = field(default_factory=list)
 
 
@@ -130,7 +134,7 @@ def parse_agenda(html: str) -> list[AgendaItem]:
             item_type=f.get("Type", "").strip(),
             recommended_action=f.get("Recommended Action") or None,
             body=body,
-            costs=_dedupe(_COST_RE.findall(body)),
+            dollar_figures=_dedupe(_DOLLAR_RE.findall(body)),
             attachments=_attachments(el),
         ))
 
@@ -181,8 +185,8 @@ def main() -> None:
         marks = []
         if i.attachments:
             marks.append(f"{len(i.attachments)} file(s)")
-        if i.costs:
-            marks.append(f"costs: {', '.join(i.costs)}")
+        if i.dollar_figures:
+            marks.append(f"$: {', '.join(i.dollar_figures)}")
         suffix = f"  [{'; '.join(marks)}]" if marks else ""
         print(f"  {i.number or '   -':>6}  {i.item_type:<26}  {i.title[:60]}{suffix}")
 
