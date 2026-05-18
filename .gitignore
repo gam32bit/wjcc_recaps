@@ -10,3 +10,6 @@ __pycache__/
 
 # Pipeline output (generated)
 out/
+
+# Secrets — never commit
+.env

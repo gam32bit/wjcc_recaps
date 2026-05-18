@@ -30,8 +30,11 @@ from parse import AgendaItem, agenda_preamble, parse_agenda, to_dict
 
 # --- Triage rules ----------------------------------------------------------
 
-# Whole sections that never carry newsletter-worthy substance — matched as a
-# case-insensitive substring against an item's Category text.
+# Whole sections that never carry newsletter-worthy substance for a meeting
+# *preview* — matched as a case-insensitive substring against an item's Category
+# text. Recognitions, announcements, and spotlights are real meeting content,
+# but they have nothing to preview (no decision, no figures, no item body), so
+# they are dropped here rather than surfaced as empty one-liners.
 BOILERPLATE_SECTIONS = (
     "meeting opening",
     "closed session",
@@ -41,6 +44,10 @@ BOILERPLATE_SECTIONS = (
     "meeting schedule",
     "set agenda",
     "adjournment",
+    "recognition",
+    "announcement",
+    "superintendent's report",
+    "spotlight",
 )
 
 # Individual procedural items, matched against the item title. These catch
@@ -54,18 +61,9 @@ BOILERPLATE_TITLES = (
     "reconvenes",
     "certifies closed",
     "approval of the agenda",
+    "approval of minutes",
     "public comment",
     "adjourn",
-)
-
-# Category keywords that mark recognitions / announcements (these items are
-# usually typed "Information/Discussion", so they must be matched on category
-# before the type-based grouping runs).
-RECOGNITION_SECTIONS = (
-    "recognition",
-    "announcement",
-    "superintendent's report",
-    "spotlight",
 )
 
 # Item Type values that legitimately belong in the discussion group; anything
@@ -104,7 +102,6 @@ class TriageResult:
     logistics: Logistics
     action_items: list[AgendaItem] = field(default_factory=list)
     consent_agenda: list[AgendaItem] = field(default_factory=list)
-    recognitions: list[AgendaItem] = field(default_factory=list)
     discussion: list[AgendaItem] = field(default_factory=list)
     report: dict = field(default_factory=dict)
 
@@ -120,18 +117,11 @@ def is_boilerplate(item: AgendaItem) -> bool:
     return any(kw in title for kw in BOILERPLATE_TITLES)
 
 
-def is_recognition(item: AgendaItem) -> bool:
-    section = item.section.lower()
-    return any(kw in section for kw in RECOGNITION_SECTIONS)
-
-
 def group_of(item: AgendaItem) -> str:
     """Return the triage group name for a surviving (non-boilerplate) item."""
     item_type = item.item_type.lower()
     if "consent" in item_type:
         return "consent_agenda"
-    if is_recognition(item):
-        return "recognitions"
     if "action" in item_type:
         return "action_items"
     return "discussion"
@@ -210,7 +200,6 @@ def triage(items: list[AgendaItem], meta: dict, preamble: str = "") -> TriageRes
     groups = {
         "action_items": result.action_items,
         "consent_agenda": result.consent_agenda,
-        "recognitions": result.recognitions,
         "discussion": result.discussion,
     }
 
@@ -244,6 +233,20 @@ def triage(items: list[AgendaItem], meta: dict, preamble: str = "") -> TriageRes
         "notes": notes,
     }
     return result
+
+
+def kept_items(result: TriageResult) -> list[AgendaItem]:
+    """Every surviving (non-boilerplate) item, in group order.
+
+    The order matches `print_report`'s group listing — action items, consent
+    agenda, then discussion — so downstream code can present a single flat list
+    without re-deriving the grouping.
+    """
+    return [
+        *result.action_items,
+        *result.consent_agenda,
+        *result.discussion,
+    ]
 
 
 # --- CLI -------------------------------------------------------------------
