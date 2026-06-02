@@ -130,6 +130,8 @@ You will be given a ranked list of the top agenda items for the next meeting —
 the ranking is already done. Your only job is to write clear, accurate prose.
 
 For each item, write:
+- number: the agenda item number exactly as shown in the item header, e.g. \
+  "8.01" or "7.04". Copy it verbatim; do not renumber.
 - headline: a short plain-English headline in your own phrasing (not the \
   official agenda title). Under 10 words.
 - what_it_is: 2-4 sentences. What is this item, what would it change, and \
