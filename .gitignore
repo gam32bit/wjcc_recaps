@@ -11,5 +11,8 @@ __pycache__/
 # Pipeline output (generated)
 out/
 
+# Fetched transcripts and PDFs (cached locally, never committed)
+.cache/
+
 # Secrets — never commit
 .env

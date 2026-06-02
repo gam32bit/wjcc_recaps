@@ -1,34 +1,24 @@
 #!/usr/bin/env python3
-"""Draft a newsletter from a triaged agenda with one Claude call.
+"""Draft newsletter prose for the top-ranked agenda items.
 
-This is the only step in the pipeline that touches the API. It takes the
-grouped, boilerplate-free items from triage.py, sends them to Claude, and gets
-back a structured draft: an intro, a ranked list of "watch" items, and one-line
-notes for everything else. Claude supplies judgment (which 3-5 items matter) and
-words (plain-English summaries); render.py owns all layout.
+This module is prose-only — it does NOT select or rank items. Selection is
+score.py's job; write.py receives the already-ranked top items and writes
+plain-English copy grounded in verbatim quotes from the source documents.
 
-The meeting logistics in the TriageResult (date, times, locations, livestream,
-public-comment rule) are deterministic and are NEVER sent to Claude — render.py
-adds them straight from the Logistics record, so they can't be hallucinated.
-
-Claude is constrained to JSON matching a fixed schema via structured outputs
-(`output_config.format`), so the draft is always shaped the same way and
-render.py never has to cope with prose.
-
-Caching note: this call runs once per meeting and has no large shared prefix
-(the bulk of the prompt is the per-meeting agenda), so prompt caching would only
-add the cache-write premium with nothing to read back — it is deliberately not
-used here.
+Each item gets a headline, a 'what it is' paragraph, and one or more verbatim
+quotes attributed to named sources (staff report, recommended action, attached
+PDF title, etc.). Logistics (dates, times, locations) are never sent to Claude;
+render.py adds them straight from the deterministic Logistics record.
 
 Usage:
     python write.py wjcc-fixtures/agenda-20260519.html \\
-                     wjcc-fixtures/meeting-meta-20260519.json
-    python write.py <agenda.html> <meeting-meta.json> --json   # raw draft JSON
+                    wjcc-fixtures/meeting-meta-20260519.json
 
-Requires ANTHROPIC_API_KEY in the environment.
+Requires ANTHROPIC_API_KEY in the environment or a .env file.
 """
 
 import argparse
+import base64
 import dataclasses
 import json
 import os
@@ -38,20 +28,15 @@ from dataclasses import dataclass, field
 
 import anthropic
 
-from parse import AgendaItem, agenda_preamble, parse_agenda
-from triage import TriageResult, kept_items, triage
+from parse import agenda_preamble, parse_agenda
+from score import ScoredItem, compute_deterministic, finalize
+from triage import kept_items, triage
 
-# Phase 1 design decision: Sonnet handles this judgement-and-summarize task well
-# at modest cost. Swap to another model ID here if that changes.
 MODEL = "claude-sonnet-4-6"
+FIXTURES_DIR = pathlib.Path(__file__).resolve().parent / "wjcc-fixtures"
 
 
 def _load_dotenv() -> None:
-    """Load `KEY=value` pairs from a gitignored `.env` file next to this script.
-
-    Dependency-free so the pipeline needs nothing beyond `anthropic`. A real
-    environment variable always wins — the file only fills in what's unset.
-    """
     env_path = pathlib.Path(__file__).resolve().parent / ".env"
     if not env_path.is_file():
         return
@@ -66,167 +51,177 @@ def _load_dotenv() -> None:
 # --- Data model ------------------------------------------------------------
 
 @dataclass
-class WatchItem:
-    number: str    # agenda item number it maps to, e.g. "8.01" ("" if none)
-    headline: str  # Claude's own plain-English headline (not the agenda title)
-    summary: str   # 2-4 sentences: what it is and why it matters
+class Quote:
+    source: str   # named source: "staff report", "recommended action", "FY2027 budget document"
+    quote: str    # verbatim excerpt from the source
 
 
 @dataclass
-class AlsoItem:
-    number: str    # agenda item number ("" if none)
-    note: str      # one neutral sentence
+class DraftItem:
+    number: str         # agenda item number, e.g. "8.01"
+    headline: str       # short plain-English headline (not the agenda's official title)
+    what_it_is: str     # 2-4 sentences: what it is and what it would change
+    quotes: list[Quote] = field(default_factory=list)
 
 
 @dataclass
 class Draft:
     intro: str
-    watch_items: list[WatchItem] = field(default_factory=list)
-    also_on_agenda: list[AlsoItem] = field(default_factory=list)
+    items: list[DraftItem] = field(default_factory=list)
 
 
 def draft_from_dict(data: dict) -> Draft:
-    """Rebuild a Draft from its JSON form (the structured-output payload)."""
     return Draft(
         intro=data["intro"],
-        watch_items=[WatchItem(**w) for w in data["watch_items"]],
-        also_on_agenda=[AlsoItem(**a) for a in data["also_on_agenda"]],
+        items=[
+            DraftItem(
+                number=it["number"],
+                headline=it["headline"],
+                what_it_is=it["what_it_is"],
+                quotes=[Quote(**q) for q in it.get("quotes", [])],
+            )
+            for it in data.get("items", [])
+        ],
     )
 
 
 # --- Claude contract -------------------------------------------------------
 
-# The schema Claude's response is constrained to. Every object needs
-# `additionalProperties: false` and a full `required` list for structured
-# outputs; count limits ("3-5 watch items") are enforced by the prompt, not the
-# schema, since JSON-schema array constraints aren't supported.
-DRAFT_SCHEMA: dict = {
+_DRAFT_SCHEMA: dict = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["intro", "watch_items", "also_on_agenda"],
+    "required": ["intro", "items"],
     "properties": {
         "intro": {"type": "string"},
-        "watch_items": {
+        "items": {
             "type": "array",
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["number", "headline", "summary"],
+                "required": ["number", "headline", "what_it_is", "quotes"],
                 "properties": {
                     "number": {"type": "string"},
                     "headline": {"type": "string"},
-                    "summary": {"type": "string"},
-                },
-            },
-        },
-        "also_on_agenda": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "additionalProperties": False,
-                "required": ["number", "note"],
-                "properties": {
-                    "number": {"type": "string"},
-                    "note": {"type": "string"},
+                    "what_it_is": {"type": "string"},
+                    "quotes": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "additionalProperties": False,
+                            "required": ["source", "quote"],
+                            "properties": {
+                                "source": {"type": "string"},
+                                "quote": {"type": "string"},
+                            },
+                        },
+                    },
                 },
             },
         },
     },
 }
 
-SYSTEM_PROMPT = """\
+_SYSTEM_PROMPT = """\
 You are the editor of "The Rundown," a free community newsletter that previews \
 upcoming Williamsburg-James City County (WJCC) School Board meetings for local \
 parents, residents, and taxpayers.
 
-Your job: read the substantive agenda items for the next meeting and produce a \
-preview draft. Write in a plain, neutral, concise voice. Explain why each item \
-matters to families and taxpayers — what it would change, who it affects, what \
-is at stake — without taking sides, editorializing, or speculating. Use only \
-facts present in the agenda text you are given. Never invent figures, dates, \
-names, or outcomes. Dollar amounts must match the agenda verbatim. The board \
-has not yet voted on any of these items; describe them as proposed or up for a \
-vote, never as decided.
+You will be given a ranked list of the top agenda items for the next meeting — \
+the ranking is already done. Your only job is to write clear, accurate prose.
 
-Produce three things:
+For each item, write:
+- headline: a short plain-English headline in your own phrasing (not the \
+  official agenda title). Under 10 words.
+- what_it_is: 2-4 sentences. What is this item, what would it change, and \
+  who does it affect? Focus on practical impact on families and taxpayers.
+- quotes: 1-3 verbatim quotes from the source documents you are given, each \
+  with a named source (e.g. "staff report", "recommended action", the document \
+  title). Quotes must be exact — copy and paste, do not paraphrase. If no \
+  document is provided for an item, omit quotes rather than fabricate them.
 
-1. intro — one short paragraph (2-4 sentences) that orients the reader: what \
-kind of meeting this is and the one or two threads worth paying attention to. \
-Do not state meeting times or locations; those are added separately.
+Also write:
+- intro: one paragraph (2-4 sentences) orienting the reader to what kind of \
+  meeting this is and the one or two threads worth paying attention to. \
+  Do not state meeting times, locations, or dates.
 
-2. watch_items — the 3 to 5 agenda items that most deserve a resident's \
-attention, ordered most to least significant. Prioritize items with real \
-impact on students, families, school staff, or taxpayer money: budgets, policy \
-changes, programs, personnel costs, contracts. For each, give a short \
-plain-English headline in your own clear phrasing (not the agenda's official \
-title) and a 2-4 sentence summary of what it is and why it matters. Put the \
-agenda item number in the `number` field, or "" if the item has none.
-
-3. also_on_agenda — every other substantive item, one neutral sentence each, \
-with its agenda number in the `number` field. Keep these brief.
-
-Choose no fewer than 3 and no more than 5 watch items. Every substantive item \
-that is not a watch item must appear in also_on_agenda."""
+Rules:
+- Use only facts present in the text you are given. Never invent figures, \
+  names, or outcomes.
+- Dollar amounts must match the source verbatim.
+- The board has not yet voted; describe proposals as proposed or up for a vote.
+- Write in a plain, neutral, concise voice. Do not editorialize or speculate.
+- Never mention ranking signals (discussion minutes, dollar scores, etc.).\
+"""
 
 
-# --- Prompt assembly -------------------------------------------------------
-
-_GROUP_LABELS = {
-    "action_items": "ACTION ITEM",
-    "discussion": "DISCUSSION ITEM",
-    "consent_agenda": "CONSENT AGENDA ITEM",
-}
-
-
-def _format_item(item: AgendaItem, label: str) -> str:
-    """Render one agenda item as a plain-text block for the prompt."""
-    head = f"{item.number} — {item.title}" if item.number else item.title
-    lines = [f"[{label}] {head}", f"Type: {item.item_type}"]
+def _format_item_block(s: ScoredItem) -> str:
+    item = s.item
+    head = f"Item {item.number} — {item.title}" if item.number else item.title
+    lines = [f"[{head}]", f"Type: {item.item_type}"]
     if item.recommended_action:
         lines.append(f"Recommended action: {item.recommended_action}")
     if item.dollar_figures:
-        lines.append(f"Dollar figures in the text: {', '.join(item.dollar_figures)}")
+        lines.append(f"Dollar figures: {', '.join(item.dollar_figures)}")
     if item.attachments:
         lines.append(f"Attachments: {'; '.join(a.name for a in item.attachments)}")
     if item.body:
         lines.append("Background:")
-        lines.append(item.body)
+        lines.append(item.body[:3000])  # cap at 3k chars per item body
     return "\n".join(lines)
 
 
-def build_prompt(result: TriageResult) -> str:
-    """Assemble the user message from the triaged, grouped agenda items."""
-    groups = (
-        ("action_items", result.action_items),
-        ("discussion", result.discussion),
-        ("consent_agenda", result.consent_agenda),
-    )
-    blocks = [
-        _format_item(item, _GROUP_LABELS[name])
-        for name, items in groups
-        for item in items
-    ]
-    return (
-        "Here are the substantive agenda items for the next WJCC School Board "
-        "meeting, already grouped and with procedural boilerplate removed. "
-        "Write the preview draft.\n\n" + "\n\n---\n\n".join(blocks)
-    )
+def draft(
+    ranked_top: list[ScoredItem],
+    attachment_paths: dict[str, pathlib.Path] | None = None,
+    feedback: str | None = None,
+    *,
+    model: str = MODEL,
+    client: anthropic.Anthropic | None = None,
+) -> Draft:
+    """Call Claude to write newsletter prose for the already-ranked top items.
 
-
-# --- The Claude call -------------------------------------------------------
-
-def write_draft(result: TriageResult, *, model: str = MODEL,
-                client: anthropic.Anthropic | None = None) -> Draft:
-    """Send the triaged agenda to Claude and return a structured Draft."""
-    if not kept_items(result):
-        raise SystemExit("Triage kept no substantive items — nothing to draft.")
+    attachment_paths maps attachment URL -> cached PDF path (optional).
+    feedback is optional human notes from the checkpoint review.
+    """
+    if not ranked_top:
+        raise SystemExit("No ranked items to draft — nothing to write.")
 
     if client is None:
         _load_dotenv()
         if not os.environ.get("ANTHROPIC_API_KEY"):
-            raise SystemExit("ANTHROPIC_API_KEY is not set (env var or .env file); "
-                             "cannot call the API.")
+            raise SystemExit(
+                "ANTHROPIC_API_KEY is not set (env var or .env file)."
+            )
         client = anthropic.Anthropic()
+
+    content: list[dict] = []
+
+    # Attach PDFs as document blocks (before the text prompt)
+    if attachment_paths:
+        for s in ranked_top:
+            for att in s.item.attachments:
+                path = (attachment_paths or {}).get(att.url)
+                if path and path.is_file():
+                    pdf_bytes = path.read_bytes()
+                    content.append({
+                        "type": "document",
+                        "source": {
+                            "type": "base64",
+                            "media_type": "application/pdf",
+                            "data": base64.standard_b64encode(pdf_bytes).decode(),
+                        },
+                        "title": att.name,
+                    })
+
+    items_text = "\n\n---\n\n".join(_format_item_block(s) for s in ranked_top)
+    prompt_parts = [
+        "Here are the top agenda items for the next WJCC School Board meeting, "
+        "ranked by importance. Write the newsletter draft.\n\n" + items_text,
+    ]
+    if feedback:
+        prompt_parts.append(f"\nReviewer notes:\n{feedback}")
+
+    content.append({"type": "text", "text": "\n\n".join(prompt_parts)})
 
     try:
         response = client.messages.create(
@@ -235,13 +230,13 @@ def write_draft(result: TriageResult, *, model: str = MODEL,
             thinking={"type": "adaptive"},
             output_config={
                 "effort": "medium",
-                "format": {"type": "json_schema", "schema": DRAFT_SCHEMA},
+                "format": {"type": "json_schema", "schema": _DRAFT_SCHEMA},
             },
-            system=SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": build_prompt(result)}],
+            system=_SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": content}],
         )
-    except anthropic.APIError as e:
-        raise SystemExit(f"Claude API call failed: {e}")
+    except anthropic.APIError as exc:
+        raise SystemExit(f"Claude API call failed: {exc}")
 
     if response.stop_reason == "refusal":
         raise SystemExit("Claude refused to generate the draft.")
@@ -251,69 +246,61 @@ def write_draft(result: TriageResult, *, model: str = MODEL,
     text = next((b.text for b in response.content if b.type == "text"), None)
     if text is None:
         raise SystemExit("Claude returned no text content.")
+
     return draft_from_dict(json.loads(text))
 
 
-def validate_draft(draft: Draft, result: TriageResult) -> list[str]:
-    """Return human-readable notes about anything off in the returned draft."""
+def validate_draft(the_draft: Draft, ranked_top: list[ScoredItem]) -> list[str]:
+    """Return human-readable notes about anything off in the draft."""
     notes: list[str] = []
-    count = len(draft.watch_items)
-    if not 3 <= count <= 5:
-        notes.append(f"expected 3-5 watch items, got {count}")
-
-    known = {item.number for item in kept_items(result) if item.number}
-    for w in draft.watch_items:
-        if w.number and w.number not in known:
-            notes.append(f"watch item references unknown agenda number {w.number!r}")
-    for a in draft.also_on_agenda:
-        if a.number and a.number not in known:
-            notes.append(f"also-on-agenda note references unknown number {a.number!r}")
-
-    # Every kept item must land somewhere in the draft — flag any that Claude
-    # left out of both lists.
-    placed = ({w.number for w in draft.watch_items}
-              | {a.number for a in draft.also_on_agenda})
-    for item in kept_items(result):
-        if item.number and item.number not in placed:
-            notes.append(f"agenda item {item.number} ({item.title}) is in "
-                         "neither watch_items nor also_on_agenda")
+    known = {s.item.number for s in ranked_top if s.item.number}
+    for di in the_draft.items:
+        if di.number and di.number not in known:
+            notes.append(f"draft item references unknown agenda number {di.number!r}")
+        if not di.quotes:
+            notes.append(f"item {di.number or di.headline!r} has no quotes")
     return notes
 
 
 # --- CLI -------------------------------------------------------------------
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__,
-                                     formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("html", type=pathlib.Path, help="agenda HTML file")
     parser.add_argument("meta", type=pathlib.Path, help="meeting-meta JSON file")
-    parser.add_argument("--json", action="store_true",
-                        help="print the raw draft JSON instead of a summary")
+    parser.add_argument("--top", type=int, default=5, help="top-N items to draft (default 5)")
+    parser.add_argument("--json", action="store_true", help="print raw draft JSON")
     args = parser.parse_args()
 
-    for path in (args.html, args.meta):
-        if not path.is_file():
-            sys.exit(f"No such file: {path}")
+    for p in (args.html, args.meta):
+        if not p.is_file():
+            sys.exit(f"No such file: {p}")
 
     html = args.html.read_text()
-    result = triage(parse_agenda(html), json.loads(args.meta.read_text()),
-                    agenda_preamble(html))
-    draft = write_draft(result)
+    result = triage(parse_agenda(html), json.loads(args.meta.read_text()), agenda_preamble(html))
+    scored = finalize(compute_deterministic(kept_items(result), result))
+    top = scored[: args.top]
+
+    print(f"Drafting prose for top {len(top)} items...")
+    the_draft = draft(top)
+
+    for note in validate_draft(the_draft, top):
+        print(f"  ! {note}")
 
     if args.json:
-        print(json.dumps(dataclasses.asdict(draft), indent=2))
+        print(json.dumps(dataclasses.asdict(the_draft), indent=2))
         return
 
-    print(f"Intro:\n  {draft.intro}\n")
-    print(f"Watch items ({len(draft.watch_items)}):")
-    for i, w in enumerate(draft.watch_items, 1):
-        print(f"  {i}. [{w.number or '-'}] {w.headline}")
-        print(f"     {w.summary}")
-    print(f"\nAlso on the agenda ({len(draft.also_on_agenda)}):")
-    for a in draft.also_on_agenda:
-        print(f"  [{a.number or '-'}] {a.note}")
-    for note in validate_draft(draft, result):
-        print(f"  ! {note}")
+    print(f"\nIntro:\n  {the_draft.intro}\n")
+    for di in the_draft.items:
+        print(f"[{di.number or '-'}] {di.headline}")
+        print(f"  {di.what_it_is}")
+        for q in di.quotes:
+            print(f"  > ({q.source}) \"{q.quote}\"")
+        print()
 
 
 if __name__ == "__main__":
