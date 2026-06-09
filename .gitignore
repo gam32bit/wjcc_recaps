@@ -14,5 +14,11 @@ out/
 # Fetched transcripts and PDFs (cached locally, never committed)
 .cache/
 
+# Calibration inputs (local-only, not committed)
+news-archives/
+past-meeting-urls
+past-meeting-urls.md
+wjcc-fixtures/news-coverage.md
+
 # Secrets — never commit
 .env

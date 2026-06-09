@@ -329,6 +329,7 @@ def score_rubric(
         f"Type: {s.item.item_type}\n"
         + (f"Recommended action: {s.item.recommended_action}\n" if s.item.recommended_action else "")
         + (f"Body:\n{s.item.body[:1000]}" if s.item.body else "")
+        + (f"\nAttachments: {', '.join(a.name for a in s.item.attachments)}" if s.item.attachments else "")
         for s in scored
     )
     user_msg = f"RUBRIC:\n{rubric_text}\n\nAGENDA ITEMS:\n{items_block}\n\nScore each item 0-5."
