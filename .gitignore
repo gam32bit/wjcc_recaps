@@ -22,3 +22,34 @@ wjcc-fixtures/news-coverage.md
 
 # Secrets — never commit
 .env
+
+# Editor / agent local state
+.idea
+.vscode
+.serena/
+.claude/settings.local.json
+.claude/.cc-writes/
+
+# Sandbox artifacts: these paths are /dev/null character devices, not files.
+# Git cannot index a device node, so `git add -A` aborts outright unless they
+# are ignored ("can only add regular files, symbolic links or git-directories").
+.bash_profile
+.bashrc
+.gitconfig
+.gitmodules
+.mcp.json
+.profile
+.ripgreprc
+.zprofile
+.zshrc
+.claude/agents
+.claude/commands
+.claude/hooks
+.claude/launch.json
+.claude/loop.md
+.claude/output-styles
+.claude/routines
+.claude/scheduled_tasks.json
+.claude/settings.json
+.claude/skills
+.claude/workflows
