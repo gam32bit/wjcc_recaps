@@ -13,11 +13,12 @@ A full interactive recap run:
   1. parse + triage (offline)
   2. fetch the meeting transcript (and optionally the work-session transcript);
      both are also saved as out/transcript-*-<date>.md
-  3. score: segmentation call(s) + rubric call -> ranked table
-  4. CHECKPOINT: review/adjust the ranking and select attachments to fetch
-  5. fetch approved PDFs
-  6. write: prose draft + public-comment summary
-  7. render -> out/recap-<date>.md
+  3. score: segmentation call(s) + public-comment speaker call + rubric call
+  4. CHECKPOINT: review the ranking and the public-comment tally
+  5. render -> out/recap-<date>.md
+
+The recap itself contains no model-written prose. Highlights quote the agenda's
+own wording; the public-comment section is a counted tally, not a summary.
 
 Pass --preview for the upcoming-meeting product ("The Rundown"), which scores
 discussion from the prior work session instead:
@@ -38,6 +39,7 @@ import sys
 
 import anthropic
 
+import pubcomment
 from parse import agenda_preamble, parse_agenda, to_dict
 from render import render_newsletter, render_recap
 from score import (
@@ -49,9 +51,9 @@ from score import (
     segment_transcript,
     _print_table,
 )
-from transcript import fetch_transcript, slice_transcript, transcript_to_markdown
+from transcript import fetch_transcript, transcript_to_markdown
 from triage import Logistics, kept_items, print_report, triage
-from write import Draft, draft, summarize_public_comment, validate_draft
+from write import Draft, draft, validate_draft
 
 PROJECT_DIR = pathlib.Path(__file__).resolve().parent
 FIXTURES_DIR = PROJECT_DIR / "wjcc-fixtures"
@@ -256,6 +258,77 @@ def _write_transcript_md(
     print(f"  Wrote {path.relative_to(PROJECT_DIR)} ({len(snippets)} snippets{extra})")
 
 
+def _public_comment_tally(
+    date: str,
+    scored: list[ScoredItem],
+    all_items: list,
+    snippets: list[dict],
+    pc_ranges: list[dict],
+    client: anthropic.Anthropic,
+) -> tuple[list, "pubcomment.PublicCommentTally"]:
+    """Identify public-comment speakers, count them, and write the audit file.
+
+    The counting is plain Python; Claude only says where each speaker starts
+    and which agenda item they addressed. The saved JSON holds the raw answer,
+    the derived tally, and the period bounds, so the section can be re-rendered
+    (and re-checked) later without another API call.
+    """
+    text = pubcomment.compact_slice(snippets, pc_ranges)
+    speakers = pubcomment.classify_speakers(
+        text, all_items, client, pc_ranges=pc_ranges
+    )
+    result = pubcomment.tally(speakers, all_items, pc_ranges)
+    pubcomment.apply_to_signals(scored, result)
+
+    path = OUT_DIR / f"recap-pubcomment-{date}.json"
+    path.write_text(pubcomment.to_json(speakers, result, pc_ranges))
+    print(
+        f"  {result.total_speakers} public-comment speakers across "
+        f"{len(result.by_item)} agenda items and {len(result.off_agenda)} "
+        f"off-agenda topics. Wrote {path.relative_to(PROJECT_DIR)}"
+    )
+    return speakers, result
+
+
+def _fetch_selected_attachments(
+    top_items: list[ScoredItem],
+) -> dict[str, pathlib.Path]:
+    """Ask which PDFs to fetch, then fetch them (preview drafting only).
+
+    Only the preview product sends documents to Claude. The recap links to
+    attachments straight from the parsed agenda and never downloads them.
+    """
+    selections = _attachment_selection(top_items)
+    if not selections:
+        return {}
+
+    from attachments import fetch_attachment
+    from pull_agenda import new_session
+
+    print("\nFetching attachments...")
+    session = new_session()
+    paths: dict[str, pathlib.Path] = {}
+    for s, att_idx in selections:
+        att = s.item.attachments[att_idx]
+        paths[att.url] = fetch_attachment(att.url, session, cache_dir=CACHE_DIR)
+    return paths
+
+
+def _print_public_comment(result: "pubcomment.PublicCommentTally") -> None:
+    """Show the tally at the checkpoint — including the off-agenda labels.
+
+    Those labels are the only model-authored strings that reach the published
+    recap, so they get looked at before anyone hits publish.
+    """
+    if not result or not result.total_speakers:
+        return
+    print(f"\nPublic comment — {result.total_speakers} speakers:")
+    for t in result.by_item:
+        print(f"  {t.count:>3}  [{t.item_number}] {t.label[:55]}")
+    for t in result.off_agenda:
+        print(f"  {t.count:>3}  (off-agenda) {t.label}")
+
+
 # --- Pipeline --------------------------------------------------------------
 
 def run(
@@ -314,6 +387,7 @@ def run(
 
     meeting_snippets: list[dict] = []
     meeting_seg_data: dict = {}
+    pc_tally: pubcomment.PublicCommentTally | None = None
 
     if recap:
         # A recap scores discussion + public comment from the MEETING video, and
@@ -340,6 +414,13 @@ def run(
             if pc_ranges:
                 pc_start = min(r["start_seconds"] for r in pc_ranges)
                 sections.append((float(pc_start), "Public comment"))
+                # Who spoke about what. This runs BEFORE the checkpoint because
+                # its per-item minutes feed the composite, and therefore the
+                # ranking the checkpoint asks you to approve.
+                speakers, pc_tally = _public_comment_tally(
+                    date, scored, all_items, meeting_snippets, pc_ranges, client
+                )
+                sections += pubcomment.speaker_anchors(speakers, all_items)
             _write_transcript_md(date, "meeting", meeting_snippets, sections)
         if work_session_url:
             print("\nFetching work-session transcript (for deep-links)...")
@@ -378,6 +459,7 @@ def run(
 
     # --- Step 4: checkpoint ---
     _print_checkpoint(scored)
+    _print_public_comment(pc_tally)
     active, top_n = _checkpoint_interaction(scored, default_top=top_n)
     top_items = active[:top_n]
     print(f"\nProceeding with top {len(top_items)} items:")
@@ -385,82 +467,53 @@ def run(
         print(f"  {s.rank}. [{s.item.number}] {s.item.title[:60]}")
     print()
 
-    # --- Step 5: fetch attachments ---
-    selections = _attachment_selection(top_items)
-    attachment_paths: dict[str, pathlib.Path] = {}
-    if selections:
-        from attachments import fetch_attachment
-        from pull_agenda import new_session
+    # --- Step 5: write (preview only) ---
+    # The recap needs no drafting step: every line of it is either quoted from
+    # the agenda or counted from parsed data.
+    the_draft: Draft | None = None
+    if not recap:
+        attachment_paths = _fetch_selected_attachments(top_items)
+        print("\nDrafting newsletter with Claude...")
+        feedback_text: str | None = None
+        try:
+            raw_feedback = input("Any reviewer notes for Claude? (Enter to skip) > ").strip()
+            if raw_feedback:
+                feedback_text = raw_feedback
+        except (EOFError, KeyboardInterrupt):
+            print()
 
-        print("\nFetching attachments...")
-        session = new_session()
-        for s, att_idx in selections:
-            att = s.item.attachments[att_idx]
-            path = fetch_attachment(att.url, session, cache_dir=CACHE_DIR)
-            attachment_paths[att.url] = path
+        the_draft = draft(
+            top_items,
+            attachment_paths=attachment_paths or None,
+            feedback=feedback_text,
+            client=client,
+        )
+        for note in validate_draft(the_draft, top_items):
+            print(f"  ! {note}")
 
-    # --- Step 6: write ---
-    print("\nDrafting newsletter with Claude...")
-    feedback_text: str | None = None
-    try:
-        raw_feedback = input("Any reviewer notes for Claude? (Enter to skip) > ").strip()
-        if raw_feedback:
-            feedback_text = raw_feedback
-    except (EOFError, KeyboardInterrupt):
-        print()
-
-    the_draft = draft(
-        top_items,
-        attachment_paths=attachment_paths or None,
-        feedback=feedback_text,
-        mode="recap" if recap else "preview",
-        client=client,
-    )
-
-    for note in validate_draft(the_draft, top_items):
-        print(f"  ! {note}")
-
-    # Public-comment summary (recap only): summarize the public-comment portion
-    # of the meeting transcript, grounded in one verbatim quote.
-    public_comment_summary = None
-    if recap and meeting_snippets and meeting_seg_data:
-        pc_ranges = meeting_seg_data.get("public_comment_period", [])
-        pc_text = slice_transcript(meeting_snippets, pc_ranges)
-        if pc_text.strip():
-            print("Summarizing public comment...")
-            top_pc = max(
-                scored, key=lambda s: s.signals.public_comment_minutes, default=None
-            )
-            hint = (
-                top_pc.item.title
-                if top_pc and top_pc.signals.public_comment_minutes > 0
-                else None
-            )
-            public_comment_summary = summarize_public_comment(
-                pc_text, top_topic=hint, client=client
-            )
-
-    # --- Step 7: render + save ---
+    # --- Step 6: render + save ---
     prefix = "recap" if recap else "newsletter"
     score_path = OUT_DIR / f"{'recap-score' if recap else 'score'}-{date}.json"
-    draft_path = OUT_DIR / f"{'recap-draft' if recap else 'draft'}-{date}.json"
     newsletter_path = OUT_DIR / f"{prefix}-{date}.md"
+    written = [score_path]
 
     score_path.write_text(json.dumps([dataclasses.asdict(s) for s in active], indent=2))
-    draft_path.write_text(json.dumps(dataclasses.asdict(the_draft), indent=2))
     if recap:
         body = render_recap(
             result.logistics,
             top_items,
-            the_draft,
+            all_items,
             result.action_items,
             result.consent_agenda,
             meeting_unique=meta.get("unique"),
             meeting_video=meeting_url,
             work_session_video=work_session_url,
-            public_comment=public_comment_summary,
+            public_comment=pc_tally,
         )
     else:
+        draft_path = OUT_DIR / f"draft-{date}.json"
+        draft_path.write_text(json.dumps(dataclasses.asdict(the_draft), indent=2))
+        written.append(draft_path)
         body = render_newsletter(
             result.logistics,
             top_items,
@@ -468,10 +521,11 @@ def run(
             meeting_unique=meta.get("unique"),
         )
     newsletter_path.write_text(body)
+    written.append(newsletter_path)
 
-    print(f"\nWrote {score_path.relative_to(PROJECT_DIR)}")
-    print(f"Wrote {draft_path.relative_to(PROJECT_DIR)}")
-    print(f"Wrote {newsletter_path.relative_to(PROJECT_DIR)}")
+    print()
+    for path in written:
+        print(f"Wrote {path.relative_to(PROJECT_DIR)}")
 
 
 def main() -> None:

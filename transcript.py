@@ -196,26 +196,6 @@ def transcript_to_markdown(
     return "\n".join(lines)
 
 
-def slice_transcript(snippets: list[dict], ranges: list[dict]) -> str:
-    """Return the joined transcript text falling within any of the ranges.
-
-    Each range is {start_seconds, end_seconds}. Used to pull the public-comment
-    portion of a meeting out of the full transcript for summarization.
-    """
-    if not ranges:
-        return ""
-    out: list[str] = []
-    for s in snippets:
-        start = s["start"]
-        for r in ranges:
-            if r["start_seconds"] <= start <= r["end_seconds"]:
-                t = s["text"].strip().replace("\n", " ")
-                if t:
-                    out.append(t)
-                break
-    return " ".join(out)
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("url", help="YouTube URL")

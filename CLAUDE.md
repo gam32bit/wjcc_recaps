@@ -1,9 +1,9 @@
 # WJCC School Board Newsletter ("The Rundown")
 
-Turns a Williamsburg-James City County School Board meeting agenda into a
-plain-English preview newsletter. A Python pipeline fetches the agenda from
-BoardDocs, structures it, ranks what matters, and drafts the post; a human
-reviews and publishes to Substack.
+Turns a Williamsburg-James City County School Board meeting into a plain-English
+recap newsletter. A Python pipeline fetches the agenda from BoardDocs, structures
+it, ranks what matters, and assembles the post; a human reviews and publishes to
+Substack. (`--preview` still produces the older upcoming-meeting product.)
 
 ## Design philosophy — read this first
 
@@ -23,16 +23,22 @@ have to be honest and defensible to readers, not "our AI thinks these matter."
   - a *measuring instrument* for mechanical tasks (e.g. segmenting a meeting
     transcript by topic) — output is spot-checkable against the source;
   - applying an *explicit, human-owned rubric* — the criteria live in a file
-    the maintainer edits, never hidden inside the model;
-  - *writing prose*, grounded in **verbatim quotes** from source documents with
-    named attribution — never synthesizing facts the reader must then go
-    fact-check.
+    the maintainer edits, never hidden inside the model.
+- **Don't let the LLM narrate.** The recap contains no model-written prose at
+  all: each highlight is the agenda item's own title plus its verbatim
+  `BACKGROUND:` text as an attributed block quote, and public comment is a
+  counted tally of speakers per topic rather than a summary. Summaries read
+  fluently and cost more to fact-check than they save; a quote the reader can
+  check against BoardDocs costs nothing to trust. (Prose survives only in the
+  `--preview` product, in write.py.)
 - **Keep un-verifiable facts away from the LLM entirely.** Meeting dates,
   times, locations, dollar figures, and URLs are extracted deterministically
   into a `Logistics` record and never sent to the model.
 - **Optimize for verifiability.** A reviewer should be able to check the draft
-  faster than they could have written it — hence quotes-with-sources and
-  signals shown as visible evidence.
+  faster than they could have written it — hence quotes-with-sources, signals
+  shown as visible evidence, and per-speaker anchors written into
+  `out/transcript-meeting-<date>.md` so every counted speaker is seekable in
+  the video.
 
 When adding a feature, ask first: can this be a deterministic signal instead of
 an LLM judgment call? Prefer the signal.
@@ -42,7 +48,8 @@ an LLM judgment call? Prefer the signal.
 - **Dev logs live in `dev-logs/`** (gitignored, local-only). The latest
   `Phase N.md` records current state, decisions, and the active plan — read it
   first; the pipeline is mid-redesign.
-- Model: `claude-sonnet-4-6` (the `MODEL` constant in `write.py`).
+- Model: `claude-sonnet-4-6` (the `MODEL` constant in `score.py`,
+  `pubcomment.py`, and `write.py`).
 - `ANTHROPIC_API_KEY` is in `.env` (gitignored), loaded automatically.
 - Fixtures in `wjcc-fixtures/`; generated output in `out/`; fetched
   PDFs/transcripts cached in `.cache/` (`out/`, `.cache/`, `.env` all

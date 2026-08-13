@@ -38,6 +38,32 @@ _MOTION_BY_RE = re.compile(
     re.IGNORECASE,
 )
 
+# WJCC staff write every substantive item body to the same labeled template.
+# Matching an explicit label list (rather than a generic ALL-CAPS-colon pattern)
+# keeps stray shouty text in the prose from being mistaken for a section head.
+BODY_LABELS = (
+    "TOPIC",
+    "POLICY ALIGNMENT",
+    "BACKGROUND",
+    "RATIONALE",
+    "SPECIAL CIRCUMSTANCE(S)",
+    "COST BUDGETED",
+    "ALTERNATIVES",
+    "SUPERINTENDENT'S RECOMMENDATION",
+    "DATA SOURCE",
+)
+# The label's emphasis markup is inconsistent across items — `_**TOPIC:**_`,
+# `**_TOPIC:_**`, `** _BACKGROUND:_**`, `**_RATIONALE:_ **` all occur — and the
+# apostrophe in SUPERINTENDENT'S is curly in the source, hence the `.` for it.
+# NOTE: do not put `\b` after the `[\s*_]*` prefix. `_` is a word character, so
+# `\b` never fires on `**_TOPIC:` and every such item silently falls through.
+_BODY_LABEL_RE = re.compile(
+    r"(?:(?<=\n)|\A)[\s*_]*("
+    + "|".join(re.escape(lbl).replace(r"'", ".") for lbl in BODY_LABELS)
+    + r")\s*:[\s*_]*\n*",
+    re.IGNORECASE,
+)
+
 
 # --- Data model ------------------------------------------------------------
 
@@ -226,6 +252,29 @@ def parse_agenda(html: str) -> list[AgendaItem]:
         ))
 
     return items
+
+
+def body_sections(body: str) -> tuple[dict[str, str], str]:
+    """Split an item body into its labeled sections.
+
+    Returns `(sections, lead)` where `sections` maps an upper-cased label from
+    BODY_LABELS to its verbatim text, and `lead` is any prose appearing before
+    the first label (a handful of older items have no labels at all).
+
+    Text is returned exactly as the staff wrote it — this is what lets the
+    newsletter quote the agenda instead of paraphrasing it.
+    """
+    hits = [
+        (m.start(), m.end(), re.sub(r"\s+", " ", m.group(1)).upper())
+        for m in _BODY_LABEL_RE.finditer(body)
+    ]
+    sections: dict[str, str] = {}
+    for i, (_, end, label) in enumerate(hits):
+        stop = hits[i + 1][0] if i + 1 < len(hits) else len(body)
+        # setdefault: if a label somehow repeats, the first occurrence wins.
+        sections.setdefault(label, body[end:stop].strip())
+    lead = (body[: hits[0][0]] if hits else body).strip()
+    return sections, lead
 
 
 def agenda_preamble(html: str) -> str:

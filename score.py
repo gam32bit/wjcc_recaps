@@ -58,7 +58,8 @@ W_RUBRIC     = 0.15
 # Recap-only signals. These are 0 for every item in a preview run (no meeting
 # transcript, no recorded votes), so adding their weighted terms leaves the
 # preview composite — and ordering — mathematically unchanged.
-W_PUBLIC_COMMENT = 0.20   # minutes residents spoke on the item at the meeting
+W_PUBLIC_COMMENT = 0.20   # minutes residents spoke on the item at the meeting,
+                          # summed per speaker by pubcomment.py
 W_VOTE_CONTESTED = 0.10   # the vote was split or failed (newsworthy by itself)
 
 MODEL = "claude-sonnet-4-6"
@@ -87,8 +88,10 @@ class Signals:
     attachment_count: int = 0         # number of PDFs attached
     rubric_score: float = -1.0        # 0-5; -1 = not yet scored
     rubric_justification: str = ""
-    # Recap-only signals (0 in a preview run).
+    # Recap-only signals (0 in a preview run). Both public-comment figures come
+    # from pubcomment.py's per-speaker tally, not from segmentation.
     public_comment_minutes: float = 0.0  # minutes residents spoke on this item
+    public_comment_speakers: int = 0     # how many residents spoke on this item
     vote_contested: bool = False         # parsed vote was split or failed
     # Recap deep-link anchors: earliest second the item appears in each video,
     # so the recap can link straight to "watch this item." None = not located.
@@ -165,15 +168,17 @@ def compute_deterministic(
 
 # --- API-derived signals ---------------------------------------------------
 
-def _compact_transcript(snippets: list[dict]) -> str:
-    """Group snippets into 30-second windows for the segmentation prompt.
+def compact_transcript(snippets: list[dict], window: float = 30.0) -> str:
+    """Group snippets into fixed-length windows for a transcript prompt.
 
-    Produces ~(total_seconds/30) lines of 'N[s] text...' — compact enough for
-    the segmentation prompt while preserving checkable timestamps.
+    Produces ~(total_seconds/window) lines of 'N[s] text...' — compact enough
+    for a prompt while preserving checkable timestamps. Segmentation uses the
+    30-second default; pubcomment.py asks for a finer window, since a
+    two-minute public comment would otherwise share a window with the next one.
     """
     if not snippets:
         return ""
-    WINDOW = 30.0
+    WINDOW = window
     current_start = snippets[0]["start"]
     current_texts: list[str] = []
     groups: list[str] = []
@@ -213,13 +218,11 @@ _SEGMENTATION_SCHEMA: dict = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["item_number", "ranges", "public_comment_ranges"],
+                "required": ["item_number", "ranges"],
                 "properties": {
                     "item_number": {"type": "string"},
                     # board discussion / debate / the vote on the item
                     "ranges": _RANGE_ARRAY,
-                    # time a member of the public addressed this item's topic
-                    "public_comment_ranges": _RANGE_ARRAY,
                 },
             },
         },
@@ -234,12 +237,8 @@ You are given a timestamped transcript of a school board meeting and a list of \
 agenda items. Your task is purely mechanical: for each agenda item, identify the \
 time range(s) where it appears in the transcript.
 
-For each item return two separate sets of ranges:
+For each item return:
 - ranges: where the BOARD discussed, debated, or voted on the item.
-- public_comment_ranges: where a member of the PUBLIC (during the public-comment \
-  period) clearly spoke about this item's topic. Only attribute a speaker to an \
-  item when the connection is clear; comment on topics not on the agenda belongs \
-  to no item.
 
 Also return public_comment_period: the time range(s) covering the ENTIRE \
 public-comment portion of the meeting — every speaker, whether or not their \
@@ -248,7 +247,7 @@ comment period (for example a work session).
 
 Rules:
 - Match by topic: use agenda item numbers and titles to find each topic.
-- If an item does not appear in a category, return an empty list for it.
+- If an item never comes up, return an empty list of ranges for it.
 - Ranges should be tight: start where that segment begins, end where it moves on.
 - Do not rank, evaluate, or comment on importance — your only job is timestamps.
 - Timestamps are seconds from the recording start.\
@@ -285,7 +284,7 @@ def segment_transcript(
     items_list = "\n".join(
         f"  {s.item.number or 'N/A'} — {s.item.title}" for s in scored
     )
-    transcript_text = _compact_transcript(snippets)
+    transcript_text = compact_transcript(snippets)
 
     user_msg = (
         "AGENDA ITEMS (number — title):\n"
@@ -319,15 +318,11 @@ def segment_transcript(
 
     data = json.loads(text)
     disc_by_number: dict[str, float] = {}
-    pubcom_by_number: dict[str, float] = {}
     start_by_number: dict[str, float] = {}
     for seg in data.get("segments", []):
         num = seg.get("item_number", "")
         ranges = seg.get("ranges", [])
         disc_by_number[num] = disc_by_number.get(num, 0.0) + _minutes(ranges)
-        pubcom_by_number[num] = pubcom_by_number.get(num, 0.0) + _minutes(
-            seg.get("public_comment_ranges", [])
-        )
         starts = [r["start_seconds"] for r in ranges]
         if starts:
             earliest = min(starts)
@@ -337,7 +332,6 @@ def segment_transcript(
         key = s.item.number or "N/A"
         if score:
             s.signals.discussion_minutes = round(disc_by_number.get(key, 0.0), 1)
-            s.signals.public_comment_minutes = round(pubcom_by_number.get(key, 0.0), 1)
         start = start_by_number.get(key)
         if start is not None:
             if kind == "work_session":
@@ -347,10 +341,9 @@ def segment_transcript(
 
     if score:
         total = sum(s.signals.discussion_minutes for s in scored)
-        pubcom = sum(s.signals.public_comment_minutes for s in scored)
         print(
-            f"  Segmentation done. {total:.1f} min board discussion + "
-            f"{pubcom:.1f} min public comment mapped across {len(scored)} items."
+            f"  Segmentation done. {total:.1f} min board discussion mapped "
+            f"across {len(scored)} items."
         )
     else:
         located = sum(1 for k in start_by_number if k != "N/A")
@@ -511,12 +504,15 @@ def evidence_line(s: ScoredItem) -> str:
     """One compact line of raw signal evidence, e.g. '24 min · $219M · vote (direct)'.
 
     In a recap the item carries a parsed vote, so the outcome ('Approved 7-0')
-    replaces the preview's prospective 'vote (direct)' label. Public-comment
-    minutes are a ranking signal only and are intentionally never shown here.
+    replaces the preview's prospective 'vote (direct)' label. The speaker count
+    is 0 in every preview run, so this line is unchanged for that product.
     """
     parts: list[str] = []
     if s.signals.discussion_minutes > 0:
         parts.append(f"{s.signals.discussion_minutes:.1f} min discussed")
+    if s.signals.public_comment_speakers:
+        n = s.signals.public_comment_speakers
+        parts.append(f"{n} speaker{'s' if n != 1 else ''}")
     if s.signals.dollar_raw:
         parts.append(s.signals.dollar_raw)
     if s.item.vote:
