@@ -88,6 +88,14 @@ class Session:
 
 
 @dataclass
+class ScheduleEntry:
+    name: str               # e.g. "Special Call Meeting", "Policy Committee"
+    date: str = ""          # verbatim from the agenda, e.g. "6/30/26"
+    time: str = ""          # e.g. "4:00 p.m."
+    location: str = ""      # e.g. "Room 300 in the Annex ..."
+
+
+@dataclass
 class Logistics:
     date: str | None                 # ISO date, e.g. "2026-05-19"
     meeting_name: str                # the raw BoardDocs meeting `name`
@@ -95,6 +103,9 @@ class Logistics:
     livestream: str | None = None
     public_comment_rule: str | None = None
     next_meeting: str | None = None  # wired up in a later step
+    # Pulled from the "Meeting Schedule" section at the end of the agenda.
+    upcoming_meetings: list[ScheduleEntry] = field(default_factory=list)
+    upcoming_events: list[ScheduleEntry] = field(default_factory=list)
 
 
 @dataclass
@@ -154,6 +165,35 @@ def _parse_sessions(meeting_name: str) -> list[Session]:
     return sessions
 
 
+def _parse_schedule_table(body: str) -> list[ScheduleEntry]:
+    """Parse a Markdown 'Event | Date | Time | Location' table into entries.
+
+    The agenda's Meeting Schedule items render (via html2text) as a pipe table:
+        **Event**| **Date**| **Time**| **Location**
+        ---|---|---|---
+        Policy Committee| 6/24/26| 8:30 a.m.| Room 108, ...
+    We keep every data row verbatim — these are never-hallucinate-able facts.
+    """
+    entries: list[ScheduleEntry] = []
+    for line in body.splitlines():
+        if "|" not in line:
+            continue
+        cells = [c.strip().strip("*").strip() for c in line.split("|")]
+        if not any(cells):
+            continue
+        if set("".join(cells)) <= set("-"):       # separator row (---|---)
+            continue
+        if cells[0].lower() == "event":           # header row
+            continue
+        entries.append(ScheduleEntry(
+            name=cells[0],
+            date=cells[1] if len(cells) > 1 else "",
+            time=cells[2] if len(cells) > 2 else "",
+            location=cells[3] if len(cells) > 3 else "",
+        ))
+    return entries
+
+
 def extract_logistics(items: list[AgendaItem], meta: dict, preamble: str) -> Logistics:
     """Pull never-hallucinate-able meeting facts out of the metadata + agenda."""
     numberdate = meta.get("numberdate", "")
@@ -179,13 +219,35 @@ def extract_logistics(items: list[AgendaItem], meta: dict, preamble: str) -> Log
             public_comment_rule = item.title
             break
 
+    # Upcoming meetings / events: the "Meeting Schedule" section at the end of
+    # the agenda carries them as pipe tables (dropped from the body as
+    # boilerplate, but their facts belong in the footer).
+    upcoming_meetings: list[ScheduleEntry] = []
+    upcoming_events: list[ScheduleEntry] = []
+    for item in items:
+        if "meeting schedule" not in item.section.lower():
+            continue
+        title = item.title.lower()
+        if "upcoming meeting" in title:
+            upcoming_meetings = _parse_schedule_table(item.body)
+        elif "upcoming event" in title:
+            upcoming_events = _parse_schedule_table(item.body)
+
+    # "Next meeting" = the first listed upcoming meeting, if any.
+    next_meeting = None
+    if upcoming_meetings:
+        first = upcoming_meetings[0]
+        next_meeting = ", ".join(p for p in (first.name, first.date, first.time) if p)
+
     return Logistics(
         date=iso_date,
         meeting_name=meeting_name,
         sessions=_parse_sessions(meeting_name),
         livestream=livestream,
         public_comment_rule=public_comment_rule,
-        next_meeting=None,  # needs the live meetings list — wired up later
+        next_meeting=next_meeting,
+        upcoming_meetings=upcoming_meetings,
+        upcoming_events=upcoming_events,
     )
 
 

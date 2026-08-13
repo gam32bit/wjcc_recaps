@@ -55,6 +55,12 @@ W_ROUTINE    = -0.10   # penalty: routine items lose up to 0.10
 W_ATTACHMENT = 0.05
 W_RUBRIC     = 0.15
 
+# Recap-only signals. These are 0 for every item in a preview run (no meeting
+# transcript, no recorded votes), so adding their weighted terms leaves the
+# preview composite — and ordering — mathematically unchanged.
+W_PUBLIC_COMMENT = 0.20   # minutes residents spoke on the item at the meeting
+W_VOTE_CONTESTED = 0.10   # the vote was split or failed (newsworthy by itself)
+
 MODEL = "claude-sonnet-4-6"
 
 _DOLLAR_RE = re.compile(r"\$[\d,]*\d(?:\.\d{2})?")
@@ -72,7 +78,7 @@ _ROUTINE_RE = re.compile(
 
 @dataclass
 class Signals:
-    discussion_minutes: float = 0.0   # raw minutes discussed at work session
+    discussion_minutes: float = 0.0   # raw minutes discussed (work session, or meeting in recap)
     dollar_magnitude: float = 0.0     # log10 of largest dollar figure, or 0
     dollar_raw: str = ""              # the verbatim dollar string (evidence line)
     is_vote: bool = False             # non-consent Action item
@@ -81,6 +87,13 @@ class Signals:
     attachment_count: int = 0         # number of PDFs attached
     rubric_score: float = -1.0        # 0-5; -1 = not yet scored
     rubric_justification: str = ""
+    # Recap-only signals (0 in a preview run).
+    public_comment_minutes: float = 0.0  # minutes residents spoke on this item
+    vote_contested: bool = False         # parsed vote was split or failed
+    # Recap deep-link anchors: earliest second the item appears in each video,
+    # so the recap can link straight to "watch this item." None = not located.
+    meeting_start_seconds: float | None = None
+    work_session_start_seconds: float | None = None
 
 
 @dataclass
@@ -144,6 +157,7 @@ def compute_deterministic(
                 off_consent=item.number in action_set,
                 is_routine=bool(_ROUTINE_RE.search(item.title)),
                 attachment_count=len(item.attachments),
+                vote_contested=bool(item.vote and item.vote.contested),
             ),
         ))
     return scored
@@ -176,48 +190,66 @@ def _compact_transcript(snippets: list[dict]) -> str:
     return "\n".join(groups)
 
 
+_RANGE_ARRAY: dict = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["start_seconds", "end_seconds"],
+        "properties": {
+            "start_seconds": {"type": "number"},
+            "end_seconds": {"type": "number"},
+        },
+    },
+}
+
 _SEGMENTATION_SCHEMA: dict = {
     "type": "object",
     "additionalProperties": False,
-    "required": ["segments"],
+    "required": ["segments", "public_comment_period"],
     "properties": {
         "segments": {
             "type": "array",
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["item_number", "ranges"],
+                "required": ["item_number", "ranges", "public_comment_ranges"],
                 "properties": {
                     "item_number": {"type": "string"},
-                    "ranges": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "additionalProperties": False,
-                            "required": ["start_seconds", "end_seconds"],
-                            "properties": {
-                                "start_seconds": {"type": "number"},
-                                "end_seconds": {"type": "number"},
-                            },
-                        },
-                    },
+                    # board discussion / debate / the vote on the item
+                    "ranges": _RANGE_ARRAY,
+                    # time a member of the public addressed this item's topic
+                    "public_comment_ranges": _RANGE_ARRAY,
                 },
             },
         },
+        # the whole public-comment portion of the meeting (all speakers, on- and
+        # off-agenda); empty for a work session that has no public comment
+        "public_comment_period": _RANGE_ARRAY,
     },
 }
 
 _SEGMENTATION_SYSTEM = """\
-You are given a timestamped transcript of a school board work session and a list \
-of agenda items. Your task is purely mechanical: for each agenda item, identify \
-the time range(s) in the transcript where that item was discussed.
+You are given a timestamped transcript of a school board meeting and a list of \
+agenda items. Your task is purely mechanical: for each agenda item, identify the \
+time range(s) where it appears in the transcript.
+
+For each item return two separate sets of ranges:
+- ranges: where the BOARD discussed, debated, or voted on the item.
+- public_comment_ranges: where a member of the PUBLIC (during the public-comment \
+  period) clearly spoke about this item's topic. Only attribute a speaker to an \
+  item when the connection is clear; comment on topics not on the agenda belongs \
+  to no item.
+
+Also return public_comment_period: the time range(s) covering the ENTIRE \
+public-comment portion of the meeting — every speaker, whether or not their \
+topic is on the agenda. Return an empty list if the transcript has no public-\
+comment period (for example a work session).
 
 Rules:
-- Match by topic: use agenda item numbers and titles to find where each topic \
-  appears in the transcript.
-- If an item was not discussed, return an empty ranges list for it.
-- Ranges should be tight: start where discussion of that item begins, \
-  end where it moves to the next topic.
+- Match by topic: use agenda item numbers and titles to find each topic.
+- If an item does not appear in a category, return an empty list for it.
+- Ranges should be tight: start where that segment begins, end where it moves on.
 - Do not rank, evaluate, or comment on importance — your only job is timestamps.
 - Timestamps are seconds from the recording start.\
 """
@@ -227,16 +259,28 @@ def segment_transcript(
     scored: list[ScoredItem],
     snippets: list[dict],
     client: anthropic.Anthropic,
-) -> None:
-    """Run the segmentation call and populate discussion_minutes in-place.
+    *,
+    kind: str = "meeting",
+    score: bool = True,
+) -> dict:
+    """Run the segmentation call; populate timing signals in-place.
 
     This is Claude used as a *measuring instrument*: given the transcript and
     the agenda titles, it identifies timestamp ranges. The output is directly
     verifiable by seeking to those seconds in the YouTube video.
+
+    kind ("meeting" / "work_session") selects which deep-link start anchor each
+    item's earliest appearance is written to. When `score` is True the
+    discussion/public-comment minutes feed the ranking; pass False to record
+    only the deep-link anchors (e.g. segmenting the work session in a recap,
+    where the meeting transcript already supplied the scoring signals).
+
+    Returns the parsed segmentation data (including `public_comment_period`),
+    or {} when there is nothing to segment.
     """
     if not snippets:
         print("  No transcript snippets — discussion_minutes will be 0 for all items.")
-        return
+        return {}
 
     items_list = "\n".join(
         f"  {s.item.number or 'N/A'} — {s.item.title}" for s in scored
@@ -270,22 +314,49 @@ def segment_transcript(
     if not text:
         raise SystemExit("Segmentation call returned no text.")
 
+    def _minutes(ranges: list[dict]) -> float:
+        return sum(max(0.0, r["end_seconds"] - r["start_seconds"]) / 60.0 for r in ranges)
+
     data = json.loads(text)
-    minutes_by_number: dict[str, float] = {}
+    disc_by_number: dict[str, float] = {}
+    pubcom_by_number: dict[str, float] = {}
+    start_by_number: dict[str, float] = {}
     for seg in data.get("segments", []):
         num = seg.get("item_number", "")
-        minutes = sum(
-            max(0.0, r["end_seconds"] - r["start_seconds"]) / 60.0
-            for r in seg.get("ranges", [])
+        ranges = seg.get("ranges", [])
+        disc_by_number[num] = disc_by_number.get(num, 0.0) + _minutes(ranges)
+        pubcom_by_number[num] = pubcom_by_number.get(num, 0.0) + _minutes(
+            seg.get("public_comment_ranges", [])
         )
-        minutes_by_number[num] = minutes_by_number.get(num, 0.0) + minutes
+        starts = [r["start_seconds"] for r in ranges]
+        if starts:
+            earliest = min(starts)
+            start_by_number[num] = min(start_by_number.get(num, earliest), earliest)
 
     for s in scored:
         key = s.item.number or "N/A"
-        s.signals.discussion_minutes = round(minutes_by_number.get(key, 0.0), 1)
+        if score:
+            s.signals.discussion_minutes = round(disc_by_number.get(key, 0.0), 1)
+            s.signals.public_comment_minutes = round(pubcom_by_number.get(key, 0.0), 1)
+        start = start_by_number.get(key)
+        if start is not None:
+            if kind == "work_session":
+                s.signals.work_session_start_seconds = round(start)
+            else:
+                s.signals.meeting_start_seconds = round(start)
 
-    total = sum(s.signals.discussion_minutes for s in scored)
-    print(f"  Segmentation done. {total:.1f} total minutes mapped across {len(scored)} items.")
+    if score:
+        total = sum(s.signals.discussion_minutes for s in scored)
+        pubcom = sum(s.signals.public_comment_minutes for s in scored)
+        print(
+            f"  Segmentation done. {total:.1f} min board discussion + "
+            f"{pubcom:.1f} min public comment mapped across {len(scored)} items."
+        )
+    else:
+        located = sum(1 for k in start_by_number if k != "N/A")
+        print(f"  {kind} segmentation done. {located} items located for deep-links.")
+
+    return data
 
 
 _RUBRIC_SCHEMA: dict = {
@@ -387,6 +458,7 @@ def finalize(scored: list[ScoredItem]) -> list[ScoredItem]:
     doll  = _minmax([s.signals.dollar_magnitude for s in scored])
     att   = _minmax([float(s.signals.attachment_count) for s in scored])
     rubric = [max(0.0, s.signals.rubric_score) / 5.0 for s in scored]
+    pubcom = _minmax([s.signals.public_comment_minutes for s in scored])
 
     for i, s in enumerate(scored):
         n = {
@@ -397,6 +469,8 @@ def finalize(scored: list[ScoredItem]) -> list[ScoredItem]:
             "is_routine":         1.0 if s.signals.is_routine else 0.0,
             "attachment_count":   att[i],
             "rubric_score":       rubric[i],
+            "public_comment_minutes": pubcom[i],
+            "vote_contested":     1.0 if s.signals.vote_contested else 0.0,
         }
         s.normalized = n
         s.composite = (
@@ -407,6 +481,8 @@ def finalize(scored: list[ScoredItem]) -> list[ScoredItem]:
             + W_ROUTINE   * n["is_routine"]
             + W_ATTACHMENT * n["attachment_count"]
             + W_RUBRIC    * n["rubric_score"]
+            + W_PUBLIC_COMMENT * n["public_comment_minutes"]
+            + W_VOTE_CONTESTED * n["vote_contested"]
         )
 
     scored.sort(key=lambda s: s.composite, reverse=True)
@@ -417,14 +493,35 @@ def finalize(scored: list[ScoredItem]) -> list[ScoredItem]:
 
 # --- Evidence line (for checkpoint + newsletter) ---------------------------
 
+def vote_summary(item: AgendaItem) -> str:
+    """Plain outcome for an item's recorded vote, e.g. 'Approved 7-0' / 'Failed 3-4'.
+
+    Reads the deterministically parsed vote; returns 'No recorded vote' when the
+    agenda carries no Motion & Voting block (a preview agenda, or an item that
+    was not acted on).
+    """
+    v = item.vote
+    if not v:
+        return "No recorded vote"
+    verb = "Approved" if v.passed else "Failed"
+    return f"{verb} {v.tally}"
+
+
 def evidence_line(s: ScoredItem) -> str:
-    """One compact line of raw signal evidence, e.g. '24 min · $219M · vote (direct)'."""
+    """One compact line of raw signal evidence, e.g. '24 min · $219M · vote (direct)'.
+
+    In a recap the item carries a parsed vote, so the outcome ('Approved 7-0')
+    replaces the preview's prospective 'vote (direct)' label. Public-comment
+    minutes are a ranking signal only and are intentionally never shown here.
+    """
     parts: list[str] = []
     if s.signals.discussion_minutes > 0:
         parts.append(f"{s.signals.discussion_minutes:.1f} min discussed")
     if s.signals.dollar_raw:
         parts.append(s.signals.dollar_raw)
-    if s.signals.is_vote:
+    if s.item.vote:
+        parts.append(vote_summary(s.item))
+    elif s.signals.is_vote:
         parts.append("vote (direct)")
     elif "consent" in s.item.item_type.lower():
         parts.append("vote (consent)")
@@ -456,7 +553,7 @@ def _print_table(scored: list[ScoredItem], *, dry_run: bool = False) -> None:
     print(f"\n{'='*72}")
     print(f"SCORE TABLE{note}")
     print(f"{'='*72}")
-    hdr = f"{'Rk':>3}  {'#':>6}  {'Score':>6}  {'Disc':>5}  {'Dollar':<12}  {'V':>1}  {'OC':>2}  {'Rt':>2}  {'At':>2}  {'Rub':>3}  Title"
+    hdr = f"{'Rk':>3}  {'#':>6}  {'Score':>6}  {'Disc':>5}  {'PC':>4}  {'Dollar':<12}  {'V':>1}  {'OC':>2}  {'Rt':>2}  {'At':>2}  {'Rub':>3}  {'Vote':>10}  Title"
     print(hdr)
     print("-" * 72)
     for s in scored:
@@ -465,11 +562,15 @@ def _print_table(scored: list[ScoredItem], *, dry_run: bool = False) -> None:
         v  = "Y" if sig.is_vote else " "
         oc = "Y" if sig.off_consent else " "
         rt = "Y" if sig.is_routine else " "
+        outcome = s.item.vote.tally if s.item.vote else ""
+        if s.item.vote and not s.item.vote.passed:
+            outcome += " FAIL"
         print(
             f"{s.rank:>3}  {s.item.number or '-':>6}  {s.composite:>6.3f}"
-            f"  {sig.discussion_minutes:>5.1f}"
+            f"  {sig.discussion_minutes:>5.1f}  {sig.public_comment_minutes:>4.1f}"
             f"  {sig.dollar_raw or '':<12}"
             f"  {v}  {oc:>2}  {rt:>2}  {sig.attachment_count:>2}  {rub:>3}"
+            f"  {outcome:>10}"
             f"  {s.item.title[:40]}"
         )
     print(f"{'='*72}\n")

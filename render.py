@@ -21,12 +21,14 @@ import dataclasses
 import datetime as dt
 import json
 import pathlib
+import re
 import sys
 
-from parse import agenda_preamble, parse_agenda
-from score import ScoredItem, compute_deterministic, evidence_line, finalize
+from parse import AgendaItem, agenda_preamble, parse_agenda
+from score import ScoredItem, compute_deterministic, evidence_line, finalize, vote_summary
+from transcript import extract_video_id
 from triage import Logistics, kept_items, triage
-from write import Draft, draft_from_dict
+from write import Draft, PublicCommentSummary, draft_from_dict
 
 WJCC_MEETINGS_URL = "https://wjcc.k12.va.us/school-board/school-board-meetings/"
 
@@ -109,6 +111,177 @@ def render_newsletter(
         lines += [f"**Next meeting:** {logistics.next_meeting}", ""]
     agenda_link = _agenda_url(meeting_unique)
     lines += [f"**Full agenda:** {agenda_link}", ""]
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _vote_tally_line(item: AgendaItem) -> str | None:
+    """Deterministic vote-tally line for a recap highlight, e.g.
+    '**Vote tally:** Approved 7-0 (moved by Randy Riffle, seconded by ...)'.
+
+    Returns None when the item carries no recorded vote — the recap then omits
+    the line entirely rather than printing 'No recorded vote'.
+    """
+    v = item.vote
+    if not v:
+        return None
+    line = f"**Vote tally:** {vote_summary(item)}"
+    if v.mover:
+        moved = f"moved by {v.mover}"
+        if v.seconder:
+            moved += f", seconded by {v.seconder}"
+        line += f" ({moved})"
+    return line
+
+
+def _watch_url(video_url: str | None, start_seconds: float | None) -> str | None:
+    """Canonical YouTube watch URL, deep-linked to start_seconds when known."""
+    if not video_url:
+        return None
+    vid = extract_video_id(video_url)
+    base = f"https://www.youtube.com/watch?v={vid}" if vid else video_url
+    if start_seconds is None:
+        return base
+    sep = "&" if "?" in base else "?"
+    return f"{base}{sep}t={int(start_seconds)}s"
+
+
+def _attachment_label(name: str) -> str:
+    """Drop a trailing file-size annotation like ' (905 KB)' from a link label."""
+    cleaned = re.sub(r"\s*\(\d[\d.,]*\s*[KMG]B\)\s*$", "", name).strip()
+    return cleaned or name
+
+
+def _schedule_line(entry) -> str:
+    """One footer bullet for an upcoming meeting/event (comma-separated facts)."""
+    detail = ", ".join(p for p in (entry.date, entry.time, entry.location) if p)
+    return f"**{entry.name}**" + (f", {detail}" if detail else "")
+
+
+def render_recap(
+    logistics: Logistics,
+    top_items: list[ScoredItem],
+    the_draft: Draft,
+    action_items: list[AgendaItem],
+    consent_items: list[AgendaItem],
+    *,
+    meeting_unique: str | None = None,
+    meeting_video: str | None = None,
+    work_session_video: str | None = None,
+    public_comment: PublicCommentSummary | None = None,
+) -> str:
+    """Render the post-meeting recap: top highlights + vote-count lists.
+
+    The vote tallies in every section come straight from the deterministically
+    parsed `item.vote` — never from the LLM — so they are exact against the
+    finalized agenda. Per-item "watch" deep-links are built from the segmentation
+    start timestamps, which a reader can verify by seeking the video.
+    """
+    date_str = _format_date(logistics.date)
+    lines: list[str] = []
+
+    title = "Recap: WJCC School Board"
+    if date_str:
+        title += f", {date_str}"
+    lines += [f"# {title}", ""]
+    lines += [the_draft.intro.strip(), ""]
+
+    # --- Highlights (full prose treatment) ---
+    lines += ["## Highlights", ""]
+    draft_by_number = {di.number: di for di in the_draft.items}
+    top_numbers = {s.item.number for s in top_items}
+    for s in top_items:
+        di = draft_by_number.get(s.item.number)
+        if di is None:
+            continue
+        lines += [f"### {di.headline.strip()}", ""]
+        lines += [di.what_it_is.strip(), ""]
+
+        # Watch links — only when the item was located in that video.
+        watch_links: list[str] = []
+        if meeting_video and s.signals.meeting_start_seconds is not None:
+            url = _watch_url(meeting_video, s.signals.meeting_start_seconds)
+            watch_links.append(f"[during the meeting]({url})")
+        if work_session_video and s.signals.work_session_start_seconds is not None:
+            url = _watch_url(work_session_video, s.signals.work_session_start_seconds)
+            watch_links.append(f"[at the work session]({url})")
+        if watch_links:
+            lines += ["**Watch:** " + " · ".join(watch_links), ""]
+
+        # Attachment links straight from the parsed agenda (deterministic).
+        if s.item.attachments:
+            docs = " · ".join(
+                f"[{_attachment_label(a.name)}]({a.url})" for a in s.item.attachments
+            )
+            lines += ["**Documents:** " + docs, ""]
+
+        tally = _vote_tally_line(s.item)
+        if tally:
+            lines += [tally, ""]
+
+    # --- Public comment summary (before the action-item lists) ---
+    if public_comment and public_comment.summary.strip():
+        lines += ["## Public comment summary", ""]
+        lines += [public_comment.summary.strip(), ""]
+        if public_comment.quote.strip():
+            lines.append(f"> {public_comment.quote.strip()}")
+            if public_comment.speaker.strip():
+                lines.append(f"> — *{public_comment.speaker.strip()}*")
+            lines.append("")
+
+    # --- Other action items (vote tallies only) ---
+    other_actions = [i for i in action_items if i.number not in top_numbers]
+    if other_actions:
+        lines += ["## Other action items", ""]
+        for i in other_actions:
+            if i.vote:
+                lines.append(f"- {i.title}, **{vote_summary(i)}**")
+            else:
+                lines.append(f"- {i.title}")
+        lines.append("")
+
+    # --- Consent agenda (batch vote) ---
+    consent = [i for i in consent_items if i.number not in top_numbers]
+    if consent:
+        voted = [i for i in consent if i.vote]
+        tallies = {vote_summary(i) for i in voted}
+        if len(tallies) == 1:
+            lines += [
+                f"## Consent agenda — {tallies.pop()}",
+                "",
+                "Approved together as the consent agenda:",
+                "",
+            ]
+            for i in consent:
+                lines.append(f"- {i.title}")
+        else:
+            # Mixed or missing outcomes — show each item's tally explicitly.
+            lines += ["## Consent agenda", ""]
+            for i in consent:
+                if i.vote:
+                    lines.append(f"- {i.title}, **{vote_summary(i)}**")
+                else:
+                    lines.append(f"- {i.title}")
+        lines.append("")
+
+    # --- Footer ---
+    lines += ["---", "", "## Meeting details", ""]
+    if logistics.upcoming_meetings:
+        lines += ["**Upcoming meetings**", ""]
+        for e in logistics.upcoming_meetings:
+            lines.append(f"- {_schedule_line(e)}")
+        lines.append("")
+    if logistics.upcoming_events:
+        lines += ["**Upcoming events**", ""]
+        for e in logistics.upcoming_events:
+            lines.append(f"- {_schedule_line(e)}")
+        lines.append("")
+    if logistics.public_comment_rule:
+        lines += [f"**How to participate:** {logistics.public_comment_rule}", ""]
+    if meeting_video:
+        lines += [f"**Watch the full meeting:** {meeting_video}", ""]
+    agenda_link = _agenda_url(meeting_unique)
+    lines += [f"[Full agenda]({agenda_link})", ""]
 
     return "\n".join(lines).rstrip() + "\n"
 

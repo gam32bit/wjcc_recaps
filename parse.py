@@ -31,6 +31,12 @@ _SECTION_NUM_RE = re.compile(r"^\s*(\d+)")
 # Require the figure to end on a digit so trailing punctuation ("$138,766,")
 # isn't swallowed into the captured amount.
 _DOLLAR_RE = re.compile(r"\$[\d,]*\d(?:\.\d{2})?")
+# Post-meeting agendas add a "Motion by X, second by Y." line to each motion.
+_MOTION_BY_RE = re.compile(
+    r"Motion by\s+(?P<mover>.+?)"
+    r"(?:,\s*second(?:ed)?\s+by\s+(?P<seconder>.+?))?\.?\s*$",
+    re.IGNORECASE,
+)
 
 
 # --- Data model ------------------------------------------------------------
@@ -40,6 +46,38 @@ class Attachment:
     name: str
     url: str
     unique: str | None = None
+
+
+@dataclass
+class Vote:
+    """A recorded board vote, present only on finalized (post-meeting) agendas.
+
+    Parsed verbatim from the BoardDocs `Motion & Voting` block. All name lists
+    are exactly as printed; tallies are just their lengths, so the outcome is
+    deterministic and checkable against the source agenda.
+    """
+    result: str                 # verbatim, e.g. "Motion Carries" / "Motion Fails"
+    motion_text: str            # the motion wording (a verbatim quote source)
+    mover: str | None = None
+    seconder: str | None = None
+    aye: list[str] = field(default_factory=list)
+    nay: list[str] = field(default_factory=list)
+    abstain: list[str] = field(default_factory=list)
+    absent: list[str] = field(default_factory=list)
+
+    @property
+    def passed(self) -> bool:
+        return "carries" in self.result.lower() or "pass" in self.result.lower()
+
+    @property
+    def contested(self) -> bool:
+        """True if the vote was not a clean unanimous pass."""
+        return bool(self.nay or self.abstain) or not self.passed
+
+    @property
+    def tally(self) -> str:
+        """Compact for/against tally, e.g. '7-0' or '5-2'."""
+        return f"{len(self.aye)}-{len(self.nay)}"
 
 
 @dataclass
@@ -57,6 +95,8 @@ class AgendaItem:
     # or the body's labeled COST section; downstream code decides relevance.
     dollar_figures: list[str] = field(default_factory=list)
     attachments: list[Attachment] = field(default_factory=list)
+    # Present only on finalized (post-meeting) agendas; None on previews.
+    vote: "Vote | None" = None
 
 
 # --- Parsing ---------------------------------------------------------------
@@ -93,6 +133,52 @@ def _attachments(item) -> list[Attachment]:
             unique=div.get("unique"),
         ))
     return found
+
+
+def _names(value: str) -> list[str]:
+    """Split a comma-separated voter list into trimmed names."""
+    return [n.strip() for n in value.split(",") if n.strip()]
+
+
+def _parse_vote(item) -> "Vote | None":
+    """Parse the BoardDocs `Motion & Voting` block, if this agenda has one.
+
+    Finalized (post-meeting) agendas attach one or more `div.motion` blocks per
+    acted-on item. The `finalresolution` block holds the outcome; we take the
+    last one (an amended motion supersedes earlier ones). Preview agendas have
+    no such block, so this returns None and the item's `vote` stays unset.
+    """
+    blocks = item.select("div.motion.finalresolution") or item.select("div.motion")
+    if not blocks:
+        return None
+    block = blocks[-1]
+
+    divs = block.find_all("div", recursive=False)
+    if not divs:
+        return None
+
+    motion_text = divs[0].get_text(" ", strip=True)
+    vote = Vote(result="", motion_text=motion_text)
+
+    for div in divs[1:]:
+        text = div.get_text(" ", strip=True)
+        low = text.lower()
+        if low.startswith("motion by"):
+            if (m := _MOTION_BY_RE.search(text)):
+                vote.mover = (m.group("mover") or "").strip() or None
+                vote.seconder = (m.group("seconder") or "").strip() or None
+        elif low.startswith("final resolution:"):
+            vote.result = text.split(":", 1)[1].strip()
+        elif low.startswith("aye:"):
+            vote.aye = _names(text.split(":", 1)[1])
+        elif low.startswith("nay:"):
+            vote.nay = _names(text.split(":", 1)[1])
+        elif low.startswith("abstain"):
+            vote.abstain = _names(text.split(":", 1)[1])
+        elif low.startswith("absent"):
+            vote.absent = _names(text.split(":", 1)[1])
+
+    return vote
 
 
 def _dedupe(values: list[str]) -> list[str]:
@@ -136,6 +222,7 @@ def parse_agenda(html: str) -> list[AgendaItem]:
             body=body,
             dollar_figures=_dedupe(_DOLLAR_RE.findall(body)),
             attachments=_attachments(el),
+            vote=_parse_vote(el),
         ))
 
     return items
@@ -183,6 +270,8 @@ def main() -> None:
     print(f"{len(items)} agenda items parsed from {args.html.name}")
     for i in items:
         marks = []
+        if i.vote:
+            marks.append(f"vote {i.vote.tally} ({i.vote.result})")
         if i.attachments:
             marks.append(f"{len(i.attachments)} file(s)")
         if i.dollar_figures:

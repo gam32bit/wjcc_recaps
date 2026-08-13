@@ -7,6 +7,7 @@ Usage:
 """
 
 import argparse
+import bisect
 import json
 import pathlib
 import re
@@ -73,6 +74,146 @@ def fetch_transcript(
             file=sys.stderr,
         )
         return []
+
+
+def _hms(seconds: float) -> str:
+    """Format seconds as H:MM:SS (or M:SS under an hour)."""
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+# --- Deterministic cleanup -------------------------------------------------
+# Auto-captions arrive as noisy fragments: YouTube marks speaker changes with
+# `>>`, drops in bracketed sound cues ([Music]), and (especially on older
+# videos) is thick with "um"/"uh" disfluencies. We tidy ONLY this mechanical
+# noise — never real words — because the rendered file is the reviewer's
+# verification surface for seeking the video against the recap's quotes.
+
+_TURN_RE = re.compile(r"\s*>>+\s*")
+_BRACKET_RE = re.compile(r"\[[^\]]*\]")
+_FILLER_RE = re.compile(r"\b(?:um+|uh+|erm+|hmm+)\b,?", re.IGNORECASE)
+_STUTTER_RE = re.compile(r"\b(\w+)(?:\s+\1\b){2,}", re.IGNORECASE)
+_SPACE_BEFORE_PUNCT_RE = re.compile(r"\s+([,.;:!?])")
+_WS_RE = re.compile(r"\s+")
+_SENTENCE_START_RE = re.compile(r"(^|[.?!]\s+)([a-z])")
+
+
+def clean_caption_text(text: str) -> str:
+    """Strip mechanical caption noise from a chunk of text, preserving words.
+
+    Removes bracketed sound cues, standalone filler words (um/uh/erm/hmm), and
+    3+-word stutters ("the the the" -> "the"), then normalizes whitespace.
+    Deliberately leaves doubled words alone — "had had" is usually real, and
+    this file must stay a faithful transcript a reviewer can quote-check.
+    """
+    text = text.replace("\n", " ")
+    text = _BRACKET_RE.sub(" ", text)
+    text = _FILLER_RE.sub(" ", text)
+    text = _STUTTER_RE.sub(r"\1", text)
+    text = _SPACE_BEFORE_PUNCT_RE.sub(r"\1", text)
+    return _WS_RE.sub(" ", text).strip()
+
+
+def _capitalize_sentences(text: str) -> str:
+    """Uppercase the chunk's first letter and each letter after .?! — cosmetic.
+
+    Repairs lowercase sentence starts left by filler removal or by ASR that
+    never capitalized in the first place. Purely for scannability.
+    """
+    return _SENTENCE_START_RE.sub(lambda m: m.group(1) + m.group(2).upper(), text)
+
+
+def transcript_to_markdown(
+    snippets: list[dict],
+    title: str,
+    *,
+    sections: list[tuple[float, str]] | None = None,
+) -> str:
+    """Render snippets as a cleaned, timestamped, speaker-segmented Markdown doc.
+
+    Captions are cleaned (see clean_caption_text), then split into paragraphs at
+    each `>>` speaker change — long turns are further capped at ~30 s — so a
+    reviewer can skim who-said-what and seek the video by timestamp.
+
+    `sections` is an optional list of (start_seconds, label) anchors — typically
+    each agenda item's earliest appearance from segmentation. A `## label`
+    heading is inserted before the paragraph containing each anchor, turning the
+    file into a topic-segmented map the reviewer can scan and jump through.
+    """
+    lines = [f"# {title}", ""]
+    if not snippets:
+        lines += ["_No transcript available._", ""]
+        return "\n".join(lines)
+
+    # Split the stream into speaker turns, tagging each fragment with the start
+    # time of the snippet it came from. A `>>` splits one snippet into a
+    # continuation (index 0) followed by one or more new turns (index > 0).
+    tokens: list[tuple[float, str, bool]] = []  # (start, text, is_turn_start)
+    for s in snippets:
+        for i, part in enumerate(_TURN_RE.split(s["text"])):
+            cleaned = clean_caption_text(part)
+            if cleaned:
+                tokens.append((s["start"], cleaned, i > 0))
+
+    WINDOW = 30.0    # cap a single speaker's turn so long speeches stay scannable
+    MIN_TURN = 5.0   # rapid sub-5s turns (e.g. roll-call) merge into one block
+    paragraphs: list[tuple[float, str]] = []  # (para_start, rendered_text)
+    buf: list[str] = []
+    para_start = 0.0
+
+    def flush() -> None:
+        if buf:
+            paragraphs.append((para_start, _capitalize_sentences(" ".join(buf))))
+
+    for start, text, turn_start in tokens:
+        if buf:
+            gap = start - para_start
+            if gap >= WINDOW or (turn_start and gap >= MIN_TURN):
+                flush()
+                buf = []
+            elif turn_start:
+                buf.append("—")  # speaker change kept visible within a block
+        if not buf:
+            para_start = start
+        buf.append(text)
+    flush()
+
+    # Assign each section anchor to the paragraph that contains it (the last
+    # paragraph starting at or before the anchor) so headings land in place.
+    headings_before: dict[int, list[str]] = {}
+    if sections and paragraphs:
+        starts = [p[0] for p in paragraphs]
+        for anchor, label in sorted(sections):
+            idx = max(0, bisect.bisect_right(starts, anchor) - 1)
+            headings_before.setdefault(idx, []).append(label)
+
+    for i, (pstart, text) in enumerate(paragraphs):
+        for label in headings_before.get(i, []):
+            lines += [f"## {label}", ""]
+        lines += [f"**[{_hms(pstart)}]** " + text, ""]
+    return "\n".join(lines)
+
+
+def slice_transcript(snippets: list[dict], ranges: list[dict]) -> str:
+    """Return the joined transcript text falling within any of the ranges.
+
+    Each range is {start_seconds, end_seconds}. Used to pull the public-comment
+    portion of a meeting out of the full transcript for summarization.
+    """
+    if not ranges:
+        return ""
+    out: list[str] = []
+    for s in snippets:
+        start = s["start"]
+        for r in ranges:
+            if r["start_seconds"] <= start <= r["end_seconds"]:
+                t = s["text"].strip().replace("\n", " ")
+                if t:
+                    out.append(t)
+                break
+    return " ".join(out)
 
 
 def main() -> None:
