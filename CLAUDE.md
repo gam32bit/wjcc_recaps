@@ -57,4 +57,10 @@ an LLM judgment call? Prefer the signal.
 - Fixtures in `wjcc-fixtures/`; generated output in `out/`; fetched
   PDFs/transcripts cached in `.cache/` (`out/`, `.cache/`, `.env` all
   gitignored).
-- Repo is local-only (no remote); dev logs are never committed.
+- Repo is `git@github.com:gam32bit/wjcc_recaps.git` (public, branch `main`).
+  Dev logs, `out/`, `.cache/`, `.env` and the packet PDFs are never committed.
+- **`docs/` IS committed** — GitHub Pages serves it, and that is how the recap
+  links a trimmed excerpt to the item's own page in the agenda packet. See
+  `pdfslice.py` and `PACKET_BASE_URL` in `render.py`.
+- Git over SSH does not work inside the tool sandbox (port 22 is not proxied,
+  and `~/.ssh` is unreadable) — pushes need the sandbox disabled.
