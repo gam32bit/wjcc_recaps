@@ -218,6 +218,11 @@ def extract_logistics(items: list[AgendaItem], meta: dict, preamble: str) -> Log
         if "public comment" in item.title.lower() or "citizens' comment" in item.section.lower():
             public_comment_rule = item.title
             break
+    # A Diligent packet is parsed section by section, so the boilerplate
+    # sections that carry logistics — Citizens' Comments, Meeting Schedule —
+    # are never built into items at all. pdfagenda.py reads them out of the
+    # packet's front matter instead and passes them in the meeting meta.
+    public_comment_rule = public_comment_rule or meta.get("public_comment_rule") or None
 
     # Upcoming meetings / events: the "Meeting Schedule" section at the end of
     # the agenda carries them as pipe tables (dropped from the body as
@@ -232,6 +237,12 @@ def extract_logistics(items: list[AgendaItem], meta: dict, preamble: str) -> Log
             upcoming_meetings = _parse_schedule_table(item.body)
         elif "upcoming event" in title:
             upcoming_events = _parse_schedule_table(item.body)
+    upcoming_meetings = upcoming_meetings or [
+        ScheduleEntry(**e) for e in meta.get("upcoming_meetings") or []
+    ]
+    upcoming_events = upcoming_events or [
+        ScheduleEntry(**e) for e in meta.get("upcoming_events") or []
+    ]
 
     # "Next meeting" = the first listed upcoming meeting, if any.
     next_meeting = None

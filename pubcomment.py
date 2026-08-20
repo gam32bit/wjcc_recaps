@@ -24,8 +24,9 @@ import anthropic
 
 from parse import AgendaItem
 from score import compact_transcript
+from titlematch import _LEAD_VERB_RE, _TITLE_MATCH_MIN, _content_words, _overlap
 
-MODEL = "claude-sonnet-4-6"
+MODEL = "claude-sonnet-5"
 
 # Speaker attribution needs a finer view of the transcript than segmentation's
 # 30-second windows: two-minute comments would otherwise share a window.
@@ -40,6 +41,18 @@ class Speaker:
     start_seconds: float
     item_number: str = ""   # an agenda item number, or "" when off-agenda
     topic_label: str = ""   # short topic wording; only set when off-agenda
+    # Numberdate of the meeting this speaker was recorded at. A period recap
+    # pools speakers from several meetings into one list, and a bare timestamp
+    # is meaningless without knowing which video it indexes into. "" in a
+    # single-meeting recap, where there is only one video.
+    meeting: str = ""
+
+
+@dataclass
+class SpeakerAnchor:
+    """Where one counted speaker can be found in the video."""
+    start_seconds: float
+    meeting: str = ""
 
 
 @dataclass
@@ -47,6 +60,11 @@ class TopicCount:
     label: str              # agenda item title, or the off-agenda topic label
     count: int
     item_number: str = ""   # "" for off-agenda topics
+    # One anchor per counted speaker, in the order they spoke. The recap links
+    # each of them, so the NUMBER OF LINKS IS THE COUNT — the bullet checks
+    # itself, and a reader can seek any speaker in five seconds without the
+    # newsletter naming or paraphrasing anyone.
+    anchors: list[SpeakerAnchor] = field(default_factory=list)
 
 
 @dataclass
@@ -164,7 +182,11 @@ def classify_speakers(
     try:
         resp = client.messages.create(
             model=model,
-            max_tokens=4096,
+            max_tokens=8192,
+            # Explicitly off: Sonnet 5 thinks by default when the field is
+            # omitted, and thinking would share this budget with the speaker
+            # JSON. See the _THINKING note in score.py.
+            thinking={"type": "disabled"},
             output_config={
                 "effort": "medium",
                 "format": {"type": "json_schema", "schema": _SCHEMA},
@@ -242,31 +264,196 @@ def tally(
     minutes: dict[str, float] = {}
     off_counts: dict[str, int] = {}
     off_labels: dict[str, str] = {}   # lowercase key -> label as first written
+    anchors: dict[str, list[SpeakerAnchor]] = {}
 
     for n, sp in enumerate(speakers):
         nxt = speakers[n + 1].start_seconds if n + 1 < len(speakers) else period_end
         span = max(0.0, nxt - sp.start_seconds) / 60.0
+        anchor = SpeakerAnchor(start_seconds=sp.start_seconds, meeting=sp.meeting)
         if sp.item_number:
             counts[sp.item_number] = counts.get(sp.item_number, 0) + 1
             minutes[sp.item_number] = minutes.get(sp.item_number, 0.0) + span
+            anchors.setdefault(sp.item_number, []).append(anchor)
         elif sp.topic_label:
             key = sp.topic_label.casefold()
             off_counts[key] = off_counts.get(key, 0) + 1
             off_labels.setdefault(key, sp.topic_label)
+            anchors.setdefault(key, []).append(anchor)
 
     result.speakers_by_item = counts
     result.minutes_by_item = {k: round(v, 1) for k, v in minutes.items()}
     # Ranked by speaker count, ties broken by agenda order (off-agenda: A-Z).
     result.by_item = sorted(
-        (TopicCount(label=titles.get(num, num), count=c, item_number=num)
+        (TopicCount(label=titles.get(num, num), count=c, item_number=num,
+                    anchors=anchors.get(num, []))
          for num, c in counts.items()),
         key=lambda t: (-t.count, order.get(t.item_number, 999)),
     )
     result.off_agenda = sorted(
-        (TopicCount(label=off_labels[k], count=c) for k, c in off_counts.items()),
+        (TopicCount(label=off_labels[k], count=c, anchors=anchors.get(k, []))
+         for k, c in off_counts.items()),
         key=lambda t: (-t.count, t.label.casefold()),
     )
     return result
+
+
+def extend_to_next_item(
+    pc_ranges: list[dict],
+    item_starts: list[float],
+    *,
+    speaker_seconds: float = 120.0,
+    verbose: bool = True,
+) -> list[dict]:
+    """Widen the public-comment window up to the first agenda item that follows.
+
+    The segmentation prompt asks for tight ranges, and on Aug 18 it closed the
+    public-comment window at 2067s — TWO SECONDS before the eleventh and final
+    speaker began at 2069s. He never reached `classify_speakers`, so the recap
+    published "10 residents spoke" when eleven had. Nothing errored; the count
+    was simply short by one, which is the one kind of mistake this newsletter
+    cannot make.
+
+    The board does not transact business between the last speaker and the first
+    agenda item, so any daylight there belongs to public comment. Widening the
+    window to the next mapped item start reclaims it, deterministically. The
+    guard fires only when the gap could hold a speaker — the board allows two
+    minutes each, so a gap under that is just the chair moving on.
+
+    `item_starts` are the mapped start times of the agenda items in the SAME
+    video (`meeting_start_seconds`, or the work-session equivalent).
+
+    Checked against the seven archived meetings: it fires on Aug 18 alone. The
+    other six leave 31-91 seconds between the window and the next item — one to
+    three segmentation windows, the chair moving on — and the largest of those,
+    June 16's 91s, sits well under the threshold.
+
+    NOTE, it moves a SCORED signal. Widening the window moves `period_end`,
+    which lengthens the last speaker's span in `tally()`, which feeds
+    `public_comment_minutes` at 0.20 of the composite. The effect is tiny (the
+    last speaker only ever gains the tail of their own turn) but it is not
+    zero, so re-running an archived recap after this change will not reproduce
+    its saved composite to the last decimal.
+    """
+    if not pc_ranges:
+        return pc_ranges
+    end = max(r["end_seconds"] for r in pc_ranges)
+    later = [t for t in item_starts if t is not None and t > end]
+    if not later:
+        return pc_ranges
+    nxt = min(later)
+    if nxt - end < speaker_seconds:
+        return pc_ranges
+    if verbose:
+        print(f"  ! public comment closed at {end:.0f}s but the next agenda item "
+              f"starts at {nxt:.0f}s — a {nxt - end:.0f}s gap, long enough for a "
+              f"speaker. Widening the window.")
+    widened = [dict(r) for r in pc_ranges]
+    last = max(widened, key=lambda r: r["end_seconds"])
+    last["end_seconds"] = nxt
+    return widened
+
+
+def attach_off_agenda(
+    speakers: list[Speaker], items: list[AgendaItem], *, verbose: bool = True
+) -> list[Speaker]:
+    """Move a speaker onto an agenda item when their topic clearly names one.
+
+    Claude is asked whether a comment is "on the agenda", and it answers about
+    the agenda in front of it. That is the right answer for a single meeting and
+    the wrong one for a month: six residents spoke about redistricting at the
+    Aug 18 meeting, where no redistricting item was on the agenda — it had been
+    the Aug 4 work session's information item, which is exactly the connection a
+    monthly recap exists to make.
+
+    So the connection is drawn deterministically instead, by the same
+    content-word matcher `carryforward.py` uses to project prior public comment
+    onto agenda titles, at the same strict threshold. "school redistricting
+    concerns" matches "Redistricting Process Update" at 1.00; "renaming James
+    Blair school" scores 0.00 against it and stays off-agenda. Every promotion
+    prints itself, because this silently moves counts between sections.
+    """
+    titles = [(i.number, i.title) for i in items if i.number]
+    if not titles:
+        return speakers
+
+    keys = {
+        number: _content_words(_LEAD_VERB_RE.sub("", title))
+        for number, title in titles
+    }
+    resolved: dict[str, tuple[str, float]] = {}   # topic label -> (number, score)
+    out: list[Speaker] = []
+    for sp in speakers:
+        if sp.item_number or not sp.topic_label:
+            out.append(sp)
+            continue
+        label = sp.topic_label
+        if label not in resolved:
+            words = _content_words(label)
+            best, best_score = "", _TITLE_MATCH_MIN
+            for number, _ in titles:
+                if (score := _overlap(words, keys[number])) > best_score:
+                    best, best_score = number, score
+            resolved[label] = (best, best_score)
+            if best and verbose:
+                title = dict(titles)[best]
+                print(f'  attach: "{label}" -> [{best}] {title[:46]} '
+                      f'({best_score:.2f})')
+        number, _ = resolved[label]
+        out.append(
+            dataclasses.replace(sp, item_number=number, topic_label="")
+            if number else sp
+        )
+    return out
+
+
+def merge_tallies(
+    tallies: list[PublicCommentTally], items: list[AgendaItem]
+) -> PublicCommentTally:
+    """Combine one tally per meeting into one tally for the period.
+
+    Counted, never re-derived: the per-item and per-topic figures are summed
+    from tallies each already computed against its own meeting's transcript.
+    Merging the raw speaker lists instead would be wrong — a speaker's minutes
+    run to the NEXT speaker's start, and across a two-week gap that span is the
+    gap, not a turn at the podium.
+    """
+    if len(tallies) == 1:
+        return tallies[0]
+
+    merged = PublicCommentTally()
+    off_counts: dict[str, int] = {}
+    off_labels: dict[str, str] = {}
+    anchors: dict[str, list[SpeakerAnchor]] = {}
+    for t in tallies:
+        merged.total_speakers += t.total_speakers
+        for num, c in t.speakers_by_item.items():
+            merged.speakers_by_item[num] = merged.speakers_by_item.get(num, 0) + c
+        for num, m in t.minutes_by_item.items():
+            merged.minutes_by_item[num] = round(
+                merged.minutes_by_item.get(num, 0.0) + m, 1
+            )
+        for topic in t.by_item:
+            anchors.setdefault(topic.item_number, []).extend(topic.anchors)
+        for topic in t.off_agenda:
+            key = topic.label.casefold()
+            off_counts[key] = off_counts.get(key, 0) + topic.count
+            off_labels.setdefault(key, topic.label)
+            anchors.setdefault(key, []).extend(topic.anchors)
+
+    titles = {i.number: i.title for i in items if i.number}
+    order = {i.number: n for n, i in enumerate(items) if i.number}
+    merged.by_item = sorted(
+        (TopicCount(label=titles.get(num, num), count=c, item_number=num,
+                    anchors=anchors.get(num, []))
+         for num, c in merged.speakers_by_item.items()),
+        key=lambda t: (-t.count, order.get(t.item_number, 999)),
+    )
+    merged.off_agenda = sorted(
+        (TopicCount(label=off_labels[k], count=c, anchors=anchors.get(k, []))
+         for k, c in off_counts.items()),
+        key=lambda t: (-t.count, t.label.casefold()),
+    )
+    return merged
 
 
 def apply_to_signals(scored: list, result: PublicCommentTally) -> None:
@@ -295,14 +482,23 @@ def to_json(
     }, indent=2)
 
 
+def _topic_from_dict(raw: dict) -> TopicCount:
+    """One TopicCount from saved JSON. `anchors` is absent in files written
+    before per-speaker links existed, so it defaults to empty and those recaps
+    re-render exactly as they did."""
+    data = dict(raw)
+    data["anchors"] = [SpeakerAnchor(**a) for a in data.get("anchors") or []]
+    return TopicCount(**data)
+
+
 def from_json(data: dict) -> tuple[list[Speaker], PublicCommentTally, list[dict]]:
     """Rebuild what `to_json` wrote (used by `render.py --recap`)."""
     speakers = [Speaker(**s) for s in data.get("speakers", [])]
     raw = data.get("tally", {})
     result = PublicCommentTally(
         total_speakers=raw.get("total_speakers", 0),
-        by_item=[TopicCount(**t) for t in raw.get("by_item", [])],
-        off_agenda=[TopicCount(**t) for t in raw.get("off_agenda", [])],
+        by_item=[_topic_from_dict(t) for t in raw.get("by_item", [])],
+        off_agenda=[_topic_from_dict(t) for t in raw.get("off_agenda", [])],
         minutes_by_item=raw.get("minutes_by_item", {}),
         speakers_by_item=raw.get("speakers_by_item", {}),
     )

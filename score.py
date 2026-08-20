@@ -62,7 +62,23 @@ W_PUBLIC_COMMENT = 0.20   # minutes residents spoke on the item at the meeting,
                           # summed per speaker by pubcomment.py
 W_VOTE_CONTESTED = 0.10   # the vote was split or failed (newsworthy by itself)
 
-MODEL = "claude-sonnet-4-6"
+# Forecast-only signal (0 in recap and preview runs). Before a meeting, public
+# comment has not happened yet, so the forecast substitutes the turnout the same
+# topic drew at RECENT meetings — hence the same weight as W_PUBLIC_COMMENT,
+# which is exactly the term it stands in for. See carryforward.py.
+W_CARRY_FORWARD = 0.20
+
+MODEL = "claude-sonnet-5"
+
+# Both calls below pass `thinking={"type": "disabled"}` deliberately. Sonnet 5
+# turns adaptive thinking ON when the field is omitted (Sonnet 4.6 left it off),
+# and thinking shares the max_tokens budget with the response — so an omitted
+# field would silently spend tokens here and risk truncating the JSON. These are
+# mechanical extraction tasks against an explicit schema, which is exactly the
+# "measuring instrument" role the design philosophy confines the model to; if
+# segmentation accuracy ever needs improving, turn thinking on deliberately and
+# raise max_tokens with it.
+_THINKING = {"type": "disabled"}
 
 _DOLLAR_RE = re.compile(r"\$[\d,]*\d(?:\.\d{2})?")
 _ROUTINE_RE = re.compile(
@@ -93,10 +109,22 @@ class Signals:
     public_comment_minutes: float = 0.0  # minutes residents spoke on this item
     public_comment_speakers: int = 0     # how many residents spoke on this item
     vote_contested: bool = False         # parsed vote was split or failed
+    # Forecast-only signal (0 in a recap or preview run). Recency-decayed count
+    # of residents who spoke on this topic at recent meetings; carryforward.py
+    # derives it from saved public-comment tallies.
+    carry_forward_speakers: float = 0.0
+    carry_forward_note: str = ""         # provenance, e.g. "14 in May, 3 in Apr"
     # Recap deep-link anchors: earliest second the item appears in each video,
     # so the recap can link straight to "watch this item." None = not located.
     meeting_start_seconds: float | None = None
     work_session_start_seconds: float | None = None
+    # Display-only minute breakdown — NEVER scored, so it cannot move a rank.
+    # `discussion_minutes` holds whichever pass fed the composite; these record
+    # where the time was actually spent. A recap segments the work session with
+    # score=False (deep-links only) and would otherwise discard those minutes,
+    # which is exactly the figure the recap's evidence note wants to show.
+    meeting_minutes: float = 0.0
+    work_session_minutes: float = 0.0
 
 
 @dataclass
@@ -261,6 +289,7 @@ def segment_transcript(
     *,
     kind: str = "meeting",
     score: bool = True,
+    accumulate: bool = False,
 ) -> dict:
     """Run the segmentation call; populate timing signals in-place.
 
@@ -298,7 +327,8 @@ def segment_transcript(
     try:
         resp = client.messages.create(
             model=MODEL,
-            max_tokens=4096,
+            max_tokens=8192,
+            thinking=_THINKING,
             output_config={
                 "effort": "medium",
                 "format": {"type": "json_schema", "schema": _SEGMENTATION_SCHEMA},
@@ -330,8 +360,21 @@ def segment_transcript(
 
     for s in scored:
         key = s.item.number or "N/A"
+        minutes = round(disc_by_number.get(key, 0.0), 1)
         if score:
-            s.signals.discussion_minutes = round(disc_by_number.get(key, 0.0), 1)
+            # A period recap segments two videos and both count: the board's
+            # time on an item is the work session plus the meeting, not
+            # whichever ran last. A single-meeting recap passes accumulate=False
+            # and this stays an assignment, exactly as before.
+            s.signals.discussion_minutes = round(
+                (s.signals.discussion_minutes if accumulate else 0.0) + minutes, 1
+            )
+        # Recorded on every pass, scoring or not: the recap's work-session pass
+        # runs score=False and these minutes are the evidence note's whole point.
+        if kind == "work_session":
+            s.signals.work_session_minutes = minutes
+        else:
+            s.signals.meeting_minutes = minutes
         start = start_by_number.get(key)
         if start is not None:
             if kind == "work_session":
@@ -402,7 +445,8 @@ def score_rubric(
     try:
         resp = client.messages.create(
             model=MODEL,
-            max_tokens=4096,
+            max_tokens=8192,
+            thinking=_THINKING,
             output_config={
                 "effort": "medium",
                 "format": {"type": "json_schema", "schema": _RUBRIC_SCHEMA},
@@ -452,6 +496,7 @@ def finalize(scored: list[ScoredItem]) -> list[ScoredItem]:
     att   = _minmax([float(s.signals.attachment_count) for s in scored])
     rubric = [max(0.0, s.signals.rubric_score) / 5.0 for s in scored]
     pubcom = _minmax([s.signals.public_comment_minutes for s in scored])
+    carry  = _minmax([s.signals.carry_forward_speakers for s in scored])
 
     for i, s in enumerate(scored):
         n = {
@@ -464,6 +509,7 @@ def finalize(scored: list[ScoredItem]) -> list[ScoredItem]:
             "rubric_score":       rubric[i],
             "public_comment_minutes": pubcom[i],
             "vote_contested":     1.0 if s.signals.vote_contested else 0.0,
+            "carry_forward_speakers": carry[i],
         }
         s.normalized = n
         s.composite = (
@@ -476,6 +522,7 @@ def finalize(scored: list[ScoredItem]) -> list[ScoredItem]:
             + W_RUBRIC    * n["rubric_score"]
             + W_PUBLIC_COMMENT * n["public_comment_minutes"]
             + W_VOTE_CONTESTED * n["vote_contested"]
+            + W_CARRY_FORWARD * n["carry_forward_speakers"]
         )
 
     scored.sort(key=lambda s: s.composite, reverse=True)
@@ -500,33 +547,67 @@ def vote_summary(item: AgendaItem) -> str:
     return f"{verb} {v.tally}"
 
 
-def evidence_line(s: ScoredItem) -> str:
+def evidence_line(
+    s: ScoredItem, *, outcome: bool = True, rubric: bool = False, dollars: bool = True
+) -> str:
     """One compact line of raw signal evidence, e.g. '24 min · $219M · vote (direct)'.
+
+    This is the "why is this here" note: every clause is a measured signal that
+    fed the composite, printed raw so a reader can check it rather than trust
+    it. Clauses are dropped when their data is absent, so the line degrades
+    instead of lying.
 
     In a recap the item carries a parsed vote, so the outcome ('Approved 7-0')
     replaces the preview's prospective 'vote (direct)' label. The speaker count
     is 0 in every preview run, so this line is unchanged for that product.
+
+    `outcome=False` drops the vote/report clause, for the recap — which already
+    prints the full tally, with mover and seconder, on its own line. `rubric`
+    adds the rubric score, which carries real weight in the composite but is
+    noise in a reader-facing layout — it is an internal ranking input, and a
+    reader has no way to check "4/5" against anything.
+
+    `dollars=False` drops the dollar clause. `dollar_raw` is the LARGEST figure
+    anywhere in the item body, which is the right thing to rank on but is not
+    always the item's price tag: the FY27 budget amendment recites the
+    $219,020,000 all-funds total it is amending, while the thing it actually
+    changes is the $203,859,000 Operating fund in COST BUDGETED. The recap
+    passes False whenever it is about to print a COST BUDGETED line, so the
+    reader sees one number rather than two that appear to disagree.
     """
     parts: list[str] = []
-    if s.signals.discussion_minutes > 0:
+    # A recap measures the meeting and (for deep-links) the work session, so it
+    # can name both. A preview or forecast has only one transcript, and older
+    # saved score JSON predates the split — hence the discussion_minutes
+    # fallback, which keeps re-rendering an archived run honest.
+    if s.signals.meeting_minutes > 0:
+        parts.append(f"{s.signals.meeting_minutes:.1f} min at the meeting")
+    if s.signals.work_session_minutes > 0:
+        parts.append(f"{s.signals.work_session_minutes:.1f} min at the work session")
+    if not parts and s.signals.discussion_minutes > 0:
         parts.append(f"{s.signals.discussion_minutes:.1f} min discussed")
     if s.signals.public_comment_speakers:
         n = s.signals.public_comment_speakers
         parts.append(f"{n} speaker{'s' if n != 1 else ''}")
-    if s.signals.dollar_raw:
+    if s.signals.carry_forward_note:
+        parts.append(f"prior comment: {s.signals.carry_forward_note}")
+    if dollars and s.signals.dollar_raw:
         parts.append(s.signals.dollar_raw)
-    if s.item.vote:
-        parts.append(vote_summary(s.item))
-    elif s.signals.is_vote:
-        parts.append("vote (direct)")
-    elif "consent" in s.item.item_type.lower():
-        parts.append("vote (consent)")
-    else:
-        parts.append("report/info")
+    if rubric and s.signals.rubric_score >= 0:
+        parts.append(f"rubric {s.signals.rubric_score:.0f}/5")
+    if outcome:
+        if s.item.vote:
+            parts.append(vote_summary(s.item))
+        elif s.signals.is_vote:
+            parts.append("vote (direct)")
+        elif "consent" in s.item.item_type.lower():
+            parts.append("vote (consent)")
+        else:
+            parts.append("report/info")
     if s.signals.is_routine:
         parts.append("routine")
-    if s.signals.attachment_count:
-        parts.append(f"{s.signals.attachment_count} attach")
+    if (n := s.signals.attachment_count):
+        parts.append(f"{n} attachment{'s' if n != 1 else ''}")
     return " · ".join(parts) if parts else "—"
 
 
@@ -549,7 +630,7 @@ def _print_table(scored: list[ScoredItem], *, dry_run: bool = False) -> None:
     print(f"\n{'='*72}")
     print(f"SCORE TABLE{note}")
     print(f"{'='*72}")
-    hdr = f"{'Rk':>3}  {'#':>6}  {'Score':>6}  {'Disc':>5}  {'PC':>4}  {'Dollar':<12}  {'V':>1}  {'OC':>2}  {'Rt':>2}  {'At':>2}  {'Rub':>3}  {'Vote':>10}  Title"
+    hdr = f"{'Rk':>3}  {'#':>6}  {'Score':>6}  {'Disc':>5}  {'PC':>4}  {'CF':>4}  {'Dollar':<12}  {'V':>1}  {'OC':>2}  {'Rt':>2}  {'At':>2}  {'Rub':>3}  {'Vote':>10}  Title"
     print(hdr)
     print("-" * 72)
     for s in scored:
@@ -564,6 +645,7 @@ def _print_table(scored: list[ScoredItem], *, dry_run: bool = False) -> None:
         print(
             f"{s.rank:>3}  {s.item.number or '-':>6}  {s.composite:>6.3f}"
             f"  {sig.discussion_minutes:>5.1f}  {sig.public_comment_minutes:>4.1f}"
+            f"  {sig.carry_forward_speakers:>4.1f}"
             f"  {sig.dollar_raw or '':<12}"
             f"  {v}  {oc:>2}  {rt:>2}  {sig.attachment_count:>2}  {rub:>3}"
             f"  {outcome:>10}"

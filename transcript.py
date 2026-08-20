@@ -13,7 +13,9 @@ import pathlib
 import re
 import sys
 
-CACHE_DIR = pathlib.Path(__file__).resolve().parent / ".cache"
+PROJECT_DIR = pathlib.Path(__file__).resolve().parent
+CACHE_DIR = PROJECT_DIR / ".cache"
+OUT_DIR = PROJECT_DIR / "out"
 
 _VIDEO_ID_RE = re.compile(
     r"(?:youtube\.com/(?:watch\?v=|live/)|youtu\.be/)([A-Za-z0-9_-]{11})"
@@ -194,6 +196,44 @@ def transcript_to_markdown(
             lines += [f"## {label}", ""]
         lines += [f"**[{_hms(pstart)}]** " + text, ""]
     return "\n".join(lines)
+
+
+# --- Segmented-transcript output (shared by the orchestrators) -------------
+
+def transcript_sections(scored: list, attr: str) -> list[tuple[float, str]]:
+    """Build (start_seconds, label) heading anchors from segmentation results.
+
+    `attr` is the Signals field holding the deep-link anchor for the transcript
+    being rendered ("meeting_start_seconds" / "work_session_start_seconds").
+    Items the model never located in the video have no anchor and get no
+    heading.
+    """
+    sections: list[tuple[float, str]] = []
+    for s in scored:
+        anchor = getattr(s.signals, attr)
+        if anchor is not None:
+            sections.append((float(anchor), f"[{s.item.number or '—'}] {s.item.title}"))
+    sections.sort()
+    return sections
+
+
+def write_transcript_md(
+    date: str,
+    label: str,
+    snippets: list[dict],
+    sections: list[tuple[float, str]] | None = None,
+    *,
+    out_dir: pathlib.Path = OUT_DIR,
+) -> pathlib.Path:
+    """Save a readable, timestamped, agenda-segmented Markdown copy of a transcript."""
+    titles = {"meeting": "Meeting transcript", "worksession": "Work session transcript"}
+    title = f"{titles.get(label, 'Transcript')} — {date}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"transcript-{label}-{date}.md"
+    path.write_text(transcript_to_markdown(snippets, title, sections=sections))
+    extra = f", {len(sections)} sections" if sections else ""
+    print(f"  Wrote {path.relative_to(PROJECT_DIR)} ({len(snippets)} snippets{extra})")
+    return path
 
 
 def main() -> None:

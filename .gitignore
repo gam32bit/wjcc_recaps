@@ -53,3 +53,7 @@ wjcc-fixtures/news-coverage.md
 .claude/settings.json
 .claude/skills
 .claude/workflows
+
+# Diligent agenda packets: 20-45 MB PDFs each, and the parsed JSON fixture
+# (agenda-<date>*.json) carries everything downstream reads from them.
+wjcc-fixtures/*.pdf

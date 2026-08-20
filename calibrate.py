@@ -42,6 +42,7 @@ from pull_agenda import (
     save_fixtures,
 )
 from score import (
+    MODEL,
     ScoredItem,
     _print_table,
     compute_deterministic,
@@ -390,8 +391,14 @@ def suggest_rubric_edits(
     print("  Calling Claude for rubric edit suggestions...", flush=True)
     try:
         resp = client.messages.create(
-            model="claude-sonnet-4-6",
-            max_tokens=4096,
+            # Shares score.py's MODEL rather than pinning its own string —
+            # this call was the one the last model bump nearly missed.
+            model=MODEL,
+            # Thinking is left at Sonnet 5's default (adaptive): unlike the
+            # extraction calls this one is open-ended analysis of where the
+            # rubric diverges from reality, which is what thinking is for.
+            # The budget is raised so thinking can't crowd out the suggestions.
+            max_tokens=16000,
             system=_SUGGEST_SYSTEM,
             messages=[{
                 "role": "user",

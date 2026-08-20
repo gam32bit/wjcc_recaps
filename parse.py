@@ -72,6 +72,11 @@ class Attachment:
     name: str
     url: str
     unique: str | None = None
+    # Packet page this document sits on, when it differs from its item's own
+    # `source_page`. Only `merge.py` sets it, for an attachment a vote inherited
+    # from its work-session review — that document lives on the REVIEW's page,
+    # hundreds of pages away from the vote's. None everywhere else.
+    page: int | None = None
 
 
 @dataclass
@@ -90,6 +95,14 @@ class Vote:
     nay: list[str] = field(default_factory=list)
     abstain: list[str] = field(default_factory=list)
     absent: list[str] = field(default_factory=list)
+    # Where this vote came from. "agenda" is the district's own Motion & Voting
+    # block — authoritative, and its names are printed. "transcript" is
+    # `votes.py` reading the roll call off an auto-captioned video, which is the
+    # only source a Diligent packet leaves: its COUNTS are solid (a misheard
+    # name is still one voice) but its SPELLINGS are not, so the recap prints
+    # the tally and the timestamp and withholds the names.
+    source: str = "agenda"
+    start_seconds: float | None = None   # roll call location, transcript votes
 
     @property
     def passed(self) -> bool:
@@ -123,6 +136,11 @@ class AgendaItem:
     attachments: list[Attachment] = field(default_factory=list)
     # Present only on finalized (post-meeting) agendas; None on previews.
     vote: "Vote | None" = None
+    # 1-based page of this item's details block in the source packet PDF. Set
+    # only by pdfagenda.py — BoardDocs agendas are HTML and have no paging.
+    # It is the only usable pointer back to the source for a Diligent packet,
+    # whose attachments are embedded rather than linked.
+    source_page: int | None = None
 
 
 # --- Parsing ---------------------------------------------------------------

@@ -48,8 +48,11 @@ an LLM judgment call? Prefer the signal.
 - **Dev logs live in `dev-logs/`** (gitignored, local-only). The latest
   `Phase N.md` records current state, decisions, and the active plan — read it
   first; the pipeline is mid-redesign.
-- Model: `claude-sonnet-4-6` (the `MODEL` constant in `score.py`,
-  `pubcomment.py`, and `write.py`).
+- Model: `claude-sonnet-5` (the `MODEL` constant in `score.py`, `pubcomment.py`,
+  and `write.py`; `calibrate.py` imports score.py's). Sonnet 5 runs adaptive
+  thinking when the `thinking` field is omitted, and thinking shares the
+  `max_tokens` budget with the response — so every call sets `thinking`
+  explicitly rather than relying on the default.
 - `ANTHROPIC_API_KEY` is in `.env` (gitignored), loaded automatically.
 - Fixtures in `wjcc-fixtures/`; generated output in `out/`; fetched
   PDFs/transcripts cached in `.cache/` (`out/`, `.cache/`, `.env` all

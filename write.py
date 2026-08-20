@@ -36,7 +36,7 @@ from parse import agenda_preamble, parse_agenda
 from score import ScoredItem, compute_deterministic, finalize
 from triage import kept_items, triage
 
-MODEL = "claude-sonnet-4-6"
+MODEL = "claude-sonnet-5"
 FIXTURES_DIR = pathlib.Path(__file__).resolve().parent / "wjcc-fixtures"
 
 
