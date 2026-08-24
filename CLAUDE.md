@@ -25,12 +25,28 @@ have to be honest and defensible to readers, not "our AI thinks these matter."
   - applying an *explicit, human-owned rubric* — the criteria live in a file
     the maintainer edits, never hidden inside the model.
 - **Don't let the LLM narrate.** The recap contains no model-written prose at
-  all: each highlight is the agenda item's own title plus its verbatim
-  `BACKGROUND:` text as an attributed block quote, and public comment is a
-  counted tally of speakers per topic rather than a summary. Summaries read
-  fluently and cost more to fact-check than they save; a quote the reader can
-  check against BoardDocs costs nothing to trust. (Prose survives only in the
-  `--preview` product, in write.py.)
+  all. A highlight carries exactly three kinds of content, and a model produces
+  none of them:
+  1. the agenda item's own title and verbatim `BACKGROUND:` text, block-quoted
+     and attributed (trimmed to two sentences, with "read more" pointing at the
+     district's own page in the packet — see `pdfslice.py`);
+  2. counted tallies — public-comment speakers, vote counts — each speaker
+     linked to their turn in the video, so the number of links IS the count;
+  3. **a quote from the meeting video, chosen by the maintainer** and recorded
+     in `quotes-<period>.json`. Nothing in the pipeline picks, writes or ranks
+     these; a person watches the meeting and puts the line in the file. The
+     text is the video's automatic captions, so every quote renders with its
+     timestamp link and says where it came from — the reader verifies it by
+     listening, the same bargain the public-comment anchors make. Elisions are
+     marked with an ellipsis and any other departure from the caption text is
+     noted in the file, so the edit is on the record. A `speaker` is filled in
+     only when the video itself establishes who is talking (a
+     self-identification, or another member naming them on the record) — a
+     caption SPELLING is never evidence; see the name-mangling trap below.
+
+  Summaries read fluently and cost more to fact-check than they save; a quote
+  the reader can check against the source costs nothing to trust. (Prose
+  survives only in the `--preview` product, in write.py.)
 - **Keep un-verifiable facts away from the LLM entirely.** Meeting dates,
   times, locations, dollar figures, and URLs are extracted deterministically
   into a `Logistics` record and never sent to the model.
@@ -64,3 +80,32 @@ an LLM judgment call? Prefer the signal.
   `pdfslice.py` and `PACKET_BASE_URL` in `render.py`.
 - Git over SSH does not work inside the tool sandbox (port 22 is not proxied,
   and `~/.ssh` is unreadable) — pushes need the sandbox disabled.
+
+## Reading a transcript
+
+Answering "what did the board actually discuss?" from `out/transcript-*-<date>.md`.
+Timestamps there are deep links into the video when the writer was given a
+`video_url=` (see `write_transcript_md`). Four traps, each of which yields a
+*wrong* answer rather than a slow one:
+
+- **The score file is not the whole meeting.** `forecast-score-<date>.json`
+  holds only the items the packet routed forward, so its `Disc` column silently
+  omits anything voted the same evening. At the 2026-08-04 work session, item
+  5.01 (FY27 operating budget amendment) drew ~8 minutes — the night's
+  second-longest discussion — and is absent from the JSON entirely, because the
+  board voted it that night as 8.07. Walk the transcript's `##` headings too.
+- **Segmenter anchors run early; verify boundaries against the text.** 6.01's
+  saved `work_session_start_seconds` was 1691 (28:11), but the item opens at
+  28:42 and the paragraph under its heading still belongs to 5.10. Corollary:
+  don't rank items within the 0.5–2.6 min band against each other — a
+  30-second boundary error is 100% of a one-minute item. "Only redistricting
+  got real time" is robust; the ordering beneath it is not.
+- **The captions mangle every name.** On 2026-08-04, Riffel appears as Riffle,
+  Reiffle, Orfalea, Ruffalo and Hutchens; Chen as Chem, Chan and "Jen
+  Charlton"; Hunley as Hanley and Hummel. Normalize against the roll call at
+  the top of the video, and write "a board member" when no name precedes the
+  turn — never guess. This is also why `votes.py` publishes counts but not
+  names: keep caption-guessed names out of anything reader-facing.
+- **Relative dates belong to the meeting, not to today.** "The survey opens
+  tomorrow," in the work session held 2026-08-04, means August 5 — not the day
+  you are reading it. Same for "this evening" and "next month."

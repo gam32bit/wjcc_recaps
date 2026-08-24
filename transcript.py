@@ -132,6 +132,7 @@ def transcript_to_markdown(
     title: str,
     *,
     sections: list[tuple[float, str]] | None = None,
+    video_url: str | None = None,
 ) -> str:
     """Render snippets as a cleaned, timestamped, speaker-segmented Markdown doc.
 
@@ -143,6 +144,12 @@ def transcript_to_markdown(
     each agenda item's earliest appearance from segmentation. A `## label`
     heading is inserted before the paragraph containing each anchor, turning the
     file into a topic-segmented map the reviewer can scan and jump through.
+
+    `video_url` turns each `[m:ss]` stamp into a link deep into the video at
+    that second. Without it a reviewer reads the timestamp, converts it to
+    seconds by hand, and pastes it onto a URL — arithmetic a computer should be
+    doing, and the kind that is wrong silently. Optional so callers that have no
+    URL (and re-renders from cached snippets) still produce a plain transcript.
     """
     lines = [f"# {title}", ""]
     if not snippets:
@@ -184,17 +191,33 @@ def transcript_to_markdown(
 
     # Assign each section anchor to the paragraph that contains it (the last
     # paragraph starting at or before the anchor) so headings land in place.
-    headings_before: dict[int, list[str]] = {}
+    headings_before: dict[int, list[tuple[str, float]]] = {}
     if sections and paragraphs:
         starts = [p[0] for p in paragraphs]
         for anchor, label in sorted(sections):
             idx = max(0, bisect.bisect_right(starts, anchor) - 1)
-            headings_before.setdefault(idx, []).append(label)
+            headings_before.setdefault(idx, []).append((label, anchor))
+
+    vid = extract_video_id(video_url) if video_url else None
+    base = (f"https://www.youtube.com/watch?v={vid}" if vid else video_url) or ""
+
+    def stamp(seconds: float) -> str:
+        if not base:
+            return f"**[{_hms(seconds)}]**"
+        sep = "&" if "?" in base else "?"
+        return f"**[{_hms(seconds)}]({base}{sep}t={int(seconds)}s)**"
 
     for i, (pstart, text) in enumerate(paragraphs):
-        for label in headings_before.get(i, []):
-            lines += [f"## {label}", ""]
-        lines += [f"**[{_hms(pstart)}]** " + text, ""]
+        for label, anchor in headings_before.get(i, []):
+            # The heading's own time is appended rather than wrapped around the
+            # label: `[[6.01] Title](url)` nests brackets inside link text and
+            # parses badly in some renderers. It links the SEGMENTER'S anchor,
+            # which is where the model thought the item began — routinely a bit
+            # early, and on 2026-08-18 it was 31 s early, landing inside the
+            # previous item. Showing it next to the first paragraph's own stamp
+            # makes that offset visible instead of hiding it behind a link.
+            lines += [f"## {label} — {stamp(anchor).strip('*')}", ""]
+        lines += [f"{stamp(pstart)} " + text, ""]
     return "\n".join(lines)
 
 
@@ -224,13 +247,20 @@ def write_transcript_md(
     sections: list[tuple[float, str]] | None = None,
     *,
     out_dir: pathlib.Path = OUT_DIR,
+    video_url: str | None = None,
 ) -> pathlib.Path:
-    """Save a readable, timestamped, agenda-segmented Markdown copy of a transcript."""
+    """Save a readable, timestamped, agenda-segmented Markdown copy of a transcript.
+
+    Pass `video_url` — the video these snippets came from — to make every
+    timestamp seekable.
+    """
     titles = {"meeting": "Meeting transcript", "worksession": "Work session transcript"}
     title = f"{titles.get(label, 'Transcript')} — {date}"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"transcript-{label}-{date}.md"
-    path.write_text(transcript_to_markdown(snippets, title, sections=sections))
+    path.write_text(transcript_to_markdown(
+        snippets, title, sections=sections, video_url=video_url
+    ))
     extra = f", {len(sections)} sections" if sections else ""
     print(f"  Wrote {path.relative_to(PROJECT_DIR)} ({len(snippets)} snippets{extra})")
     return path

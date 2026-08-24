@@ -48,7 +48,13 @@ other:
         --recap --target 20260804 --fixtures
     python make_newsletter.py --period 202608 \
         --video 20260804=https://www.youtube.com/watch?v=HSimRbMP5QQ \
-        --video 20260818=https://www.youtube.com/watch?v=dDNmOJgzQe0
+        --video 20260818=https://www.youtube.com/watch?v=dDNmOJgzQe0 \
+        --agenda-url 20260804=https://... --agenda-url 20260818=https://...
+
+Each meeting's header links its own recording and its own agenda. Diligent
+publishes no per-meeting URL the pipeline can derive, so --agenda-url is how
+one gets in; without it that meeting shows its Watch link alone. Quotes chosen
+by hand from the videos go in quotes-<period>.json (see that file's _README).
 
 A period run writes out/recap-<period>.md and leaves the per-meeting
 out/recap-score-<numberdate>.json files alone, so a forecast check still
@@ -387,7 +393,9 @@ def _load_agenda(agenda_path: pathlib.Path) -> tuple[list, str]:
     return parse_agenda(html), agenda_preamble(html)
 
 
-def _period_sources(period: str, video_args: list[str]) -> list[merge.SourceMeeting]:
+def _period_sources(
+    period: str, video_args: list[str], agenda_args: list[str] | None = None,
+) -> list[merge.SourceMeeting]:
     """Collect every fixture whose numberdate falls in `period` (YYYYMM).
 
     A meeting's KIND — work session or regular — decides which discussion-time
@@ -395,12 +403,17 @@ def _period_sources(period: str, video_args: list[str]) -> list[merge.SourceMeet
     built from rather than guessed from the date, because the board holds both
     kinds on Tuesdays.
     """
-    videos: dict[str, str] = {}
-    for spec in video_args:
-        numberdate, sep, url = spec.partition("=")
-        if not sep:
-            raise SystemExit(f"--video wants NUMBERDATE=URL, got {spec!r}")
-        videos[numberdate.strip()] = url.strip()
+    def by_numberdate(specs: list[str], flag: str) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for spec in specs:
+            numberdate, sep, url = spec.partition("=")
+            if not sep:
+                raise SystemExit(f"{flag} wants NUMBERDATE=URL, got {spec!r}")
+            out[numberdate.strip()] = url.strip()
+        return out
+
+    videos = by_numberdate(video_args, "--video")
+    agendas = by_numberdate(agenda_args or [], "--agenda-url")
 
     sources: list[merge.SourceMeeting] = []
     for key, (agenda_path, meta_path, numberdate) in sorted(_discover_fixtures().items()):
@@ -425,22 +438,29 @@ def _period_sources(period: str, video_args: list[str]) -> list[merge.SourceMeet
         sources.append(merge.SourceMeeting(
             numberdate=numberdate, kind=kind, items=items, meta=meta,
             preamble=preamble, video=videos.get(numberdate),
+            agenda=agendas.get(numberdate),
         ))
 
     if not sources:
         raise SystemExit(f"No agenda fixtures for period {period}.")
-    unknown = set(videos) - {s.numberdate for s in sources}
-    if unknown:
-        raise SystemExit(
-            f"--video given for {', '.join(sorted(unknown))}, which has no "
-            f"fixture in {period}."
-        )
+    known = {s.numberdate for s in sources}
+    for flag, given in (("--video", videos), ("--agenda-url", agendas)):
+        if (unknown := set(given) - known):
+            raise SystemExit(
+                f"{flag} given for {', '.join(sorted(unknown))}, which has no "
+                f"fixture in {period}."
+            )
     return sources
 
 
-def _packet_paths(sources: list[merge.SourceMeeting]) -> dict[str, str]:
-    """Per-item packet slices written by `pdfslice.py`, keyed the way the recap
-    keys items.
+def _packet_paths(
+    sources: list[merge.SourceMeeting],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Packet slices written by `pdfslice.py`, keyed the way the recap keys them.
+
+    Returns (item details by namespaced item number, attachments by namespaced
+    packet page) — see `pdfslice.slice_packet` for why the attachment map is
+    keyed by page.
 
     `pdfslice` works on one meeting and writes the agenda's own numbering;
     `merge.py` prefixes every number with its meeting. Namespacing here keeps
@@ -448,13 +468,41 @@ def _packet_paths(sources: list[merge.SourceMeeting]) -> dict[str, str]:
     per-meeting artifact uses.
     """
     paths: dict[str, str] = {}
+    attachments: dict[str, str] = {}
     for source in sources:
         path = OUT_DIR / f"packet-{source.numberdate}.json"
         if not path.is_file():
             continue
-        for number, rel in json.loads(path.read_text()).items():
+        data = json.loads(path.read_text())
+        # Files written before attachments were sliced are a flat
+        # {number: path} map; read them as the details half.
+        items = data.get("items", data) if "items" in data else data
+        for number, rel in items.items():
             paths[f"{source.prefix}-{number}"] = rel
-    return paths
+        for page, rel in data.get("attachments", {}).items():
+            attachments[f"{source.prefix}-{page}"] = rel
+    return paths, attachments
+
+
+def _load_quotes(period: str) -> tuple[dict[str, dict], dict[str, dict]]:
+    """Maintainer-chosen quotes for this period, from `quotes-<period>.json`.
+
+    Returns (one quote per agenda item, one excerpt per public-comment
+    speaker). Human-owned in the way `rubric.md` is: a person watches the
+    meeting, picks the line, and records where it came from. Nothing in the
+    pipeline writes this file, and a period without one renders no quotes.
+    """
+    path = PROJECT_DIR / f"quotes-{period}.json"
+    if not path.is_file():
+        print(f"  No {path.name} — rendering without quotes.")
+        return {}, {}
+    data = json.loads(path.read_text())
+    items = data.get("items", {})
+    speakers = data.get("speakers", {})
+    n_speakers = sum(len(v) for v in speakers.values())
+    print(f"  {len(items)} item quote(s) and {n_speakers} speaker excerpt(s) "
+          f"from {path.name}.")
+    return items, speakers
 
 
 def run_period(
@@ -574,7 +622,7 @@ def run_period(
         write_transcript_md(
             source.numberdate,
             "worksession" if source.kind == "work_session" else "meeting",
-            snippets, sections,
+            snippets, sections, video_url=source.video,
         )
 
         # Recover this meeting's roll-call votes from the same transcript. A
@@ -635,6 +683,8 @@ def run_period(
 
     # --- Step 5: render + save ---
     ordered = sorted(sources, key=lambda s: s.numberdate)
+    item_slices, attachment_slices = _packet_paths(ordered)
+    quotes, speaker_quotes = _load_quotes(period)
     body = render_recap(
         result.logistics,
         top_items,
@@ -649,7 +699,10 @@ def run_period(
         public_comment=pc_tally,
         period_label=label,
         period_meetings=meta["period_meetings"],
-        packet_paths=_packet_paths(ordered),
+        packet_paths=item_slices,
+        attachment_paths=attachment_slices,
+        quotes=quotes,
+        speaker_quotes=speaker_quotes,
     )
 
     score_path = OUT_DIR / f"recap-score-{period}.json"
@@ -769,7 +822,9 @@ def run(
                     date, scored, all_items, meeting_snippets, pc_ranges, client
                 )
                 sections += pubcomment.speaker_anchors(speakers, all_items)
-            write_transcript_md(date, "meeting", meeting_snippets, sections)
+            write_transcript_md(
+                date, "meeting", meeting_snippets, sections, video_url=meeting_url
+            )
         if work_session_url:
             print("\nFetching work-session transcript (for deep-links)...")
             ws_snippets = fetch_transcript(work_session_url, cache_dir=CACHE_DIR)
@@ -780,6 +835,7 @@ def run(
                 write_transcript_md(
                     date, "worksession", ws_snippets,
                     transcript_sections(scored, "work_session_start_seconds"),
+                    video_url=work_session_url,
                 )
     else:
         # A preview measures discussion from the prior work session.
@@ -795,6 +851,7 @@ def run(
             write_transcript_md(
                 date, "worksession", ws_snippets,
                 transcript_sections(scored, "work_session_start_seconds"),
+                video_url=work_session_url,
             )
 
     rubric_path = PROJECT_DIR / "rubric.md"
@@ -947,12 +1004,21 @@ def main() -> None:
         help="video for one meeting in a --period run, e.g. "
         "20260804=https://youtu.be/... (repeatable)",
     )
+    parser.add_argument(
+        "--agenda-url",
+        metavar="NUMBERDATE=URL",
+        action="append",
+        default=[],
+        help="the district's page for one meeting's agenda packet, e.g. "
+        "20260804=https://... (repeatable). Diligent publishes no URL the "
+        "pipeline can derive, so a meeting without one links Watch only",
+    )
     args = parser.parse_args()
 
     if args.period:
         run_period(
             args.period,
-            _period_sources(args.period, args.video),
+            _period_sources(args.period, args.video, args.agenda_url),
             top_n=args.top if args.top is not None else 3,
             dry_run=args.dry_run,
             no_checkpoint=args.no_checkpoint,

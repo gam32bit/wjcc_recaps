@@ -57,6 +57,7 @@ class SourceMeeting:
     meta: dict
     preamble: str = ""
     video: str | None = None
+    agenda: str | None = None   # the district's page for THIS meeting's packet
 
     @property
     def prefix(self) -> str:
@@ -198,7 +199,8 @@ def period_meta(sources: list[SourceMeeting]) -> dict:
     ordered = sorted(sources, key=lambda s: s.numberdate)
     meta = dict(ordered[-1].meta)
     meta["period_meetings"] = [
-        {"numberdate": s.numberdate, "label": s.label, "video": s.video}
+        {"numberdate": s.numberdate, "label": s.label, "video": s.video,
+         "agenda": s.agenda}
         for s in ordered
     ]
     return meta

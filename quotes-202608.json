@@ -1,0 +1,77 @@
+{
+  "_README": [
+    "Quotes chosen BY A HUMAN from the meeting videos. This file is",
+    "maintainer-owned in exactly the way rubric.md is: nothing here is picked,",
+    "written, or ranked by a model, and render.py only lays out what it finds.",
+    "",
+    "'items' holds one quote per agenda item, keyed by the namespaced item",
+    "number merge.py produces. 'speakers' holds a short excerpt for one",
+    "public-comment speaker, keyed by meeting numberdate and then by the",
+    "speaker's start_seconds in out/recap-pubcomment-<period>.json — the same",
+    "anchor the timestamp link uses, so an excerpt can never drift onto the",
+    "wrong speaker. Keep speaker excerpts under ten words: they sit on the same",
+    "line as the timestamp, and the point is to say what the person ASKED THE",
+    "BOARD TO DO, not to summarize their two minutes.",
+    "",
+    "All text is the meeting's AUTOMATIC CAPTIONS, which are an ASR guess and",
+    "not a certified transcript — which is why everything renders with its",
+    "timestamp link and says where it came from. The reader verifies it by",
+    "listening. Use an ellipsis for anything elided and square brackets for a",
+    "corrected caption mangling (a speaker excerpt records its own fix in",
+    "this README rather than a 'note' field); note any other departure, so the",
+    "edit is on the record rather than invisible.",
+    "",
+    "'speaker' is only ever filled in when the video itself establishes who is",
+    "talking — a self-identification, or the chair or another member naming",
+    "them on the record. A caption SPELLING is not evidence (see CLAUDE.md:",
+    "Chen comes through as Chem, Chan and 'Jen Charlton'). Leave it out rather",
+    "than guess. Public-comment speakers are never named at all: the recap",
+    "counts them and links them, and that is the whole of it.",
+    "",
+    "PENDING: the 2069 speaker excerpt is the ELEVENTH speaker (34:29), who is",
+    "missing from out/recap-pubcomment-202608.json — that file was written",
+    "before pubcomment.extend_to_next_item landed, so its window closes at",
+    "2067s, two seconds before he starts. That is the exact failure the",
+    "function was written for. Re-running the period picks him up and the",
+    "count becomes 11, not 10. Check that 2069 matches the anchor the run",
+    "actually produces; a key that misses simply renders no excerpt.",
+    "",
+    "FIXES in speaker excerpts: 797 has [rezoned] for the captions' 'reszoned';",
+    "2069 has 'three-letter' for the captions' 'threeletter'. Speaker 3 (1063)",
+    "is deliberately excerpt-less — nothing he said stands up as a short quote,",
+    "and a blank there is honest; the timestamp still works."
+  ],
+
+  "items": {
+    "0804-6.01": {
+      "text": "What I have heard from community members … is really just around the unknowns with the transition plan. … I can get behind any kind of boundary line, but I need to know what the plan is.",
+      "speaker": "Ms. Chen, school board member",
+      "meeting": "20260804",
+      "start_seconds": 3893,
+      "note": "Two spans: the first from 1:04:53 (the anchor), the second from 1:06:27. The first ellipsis drops the captions' 'and concerns', which garbles the sentence. Speaker established in the video, not from a caption spelling: she introduces herself at 1:02:48 ('This is Jen') and a fellow member answers 'to Ms. Chen's point' at 1:09:27."
+    },
+
+    "0804-8.07": {
+      "text": "I'm happy to see our teachers and staff are continuing to get a little bigger piece of the pie when it comes to compensation with this extra money. I'm thrilled to see the … hour day change for our related services positions in there.",
+      "speaker": "Mr. Hodges, school board member",
+      "meeting": "20260804",
+      "start_seconds": 858,
+      "note": "One span from 14:18 through 14:49; the ellipsis drops a repeated 'the the'. Speaker established in the video: the chair says 'Yes, Mr. Hodges' immediately before he begins. Replaces an earlier pick — the CFO's summary of the three-way split of the money — which read as a staff briefing rather than as the board's own take."
+    }
+  },
+
+  "speakers": {
+    "20260818": {
+      "797":  "everything along Oldtown Road to be [rezoned] for Lafayette",
+      "941":  "I respectfully request transparency in this new process.",
+      "1198": "Please revisit the June survey results",
+      "1338": "What should unite our children?",
+      "1468": "Let's celebrate unity, not diversity.",
+      "1614": "start with the incoming freshman class",
+      "1746": "they seem to lack representation here",
+      "1828": "encourage the school board to revisit the matter",
+      "1922": "would it be that hard to reopen the conversation?",
+      "2069": "put a three-letter identifier ahead of the message"
+    }
+  }
+}

@@ -576,7 +576,7 @@ def run(
                 write_transcript_md(
                     date, "worksession", snippets,
                     transcript_sections(scored, "work_session_start_seconds"),
-                    out_dir=OUT_DIR,
+                    out_dir=OUT_DIR, video_url=work_session_url,
                 )
         else:
             print(
