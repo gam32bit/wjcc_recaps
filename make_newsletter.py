@@ -79,6 +79,8 @@ import sys
 
 import anthropic
 
+import llmcache
+
 import merge
 import pubcomment
 import votes
@@ -1013,7 +1015,13 @@ def main() -> None:
         "20260804=https://... (repeatable). Diligent publishes no URL the "
         "pipeline can derive, so a meeting without one links Watch only",
     )
+    parser.add_argument(
+        "--no-llm-cache", action="store_true",
+        help="Re-run every Claude call instead of reusing .cache/llm/ "
+             "answers (the cache is still refreshed).",
+    )
     args = parser.parse_args()
+    llmcache.set_enabled(not args.no_llm_cache)
 
     if args.period:
         run_period(

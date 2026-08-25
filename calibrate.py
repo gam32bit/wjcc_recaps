@@ -32,6 +32,8 @@ import sys
 
 import anthropic
 
+import llmcache
+
 from parse import agenda_preamble, parse_agenda
 from pull_agenda import (
     describe,
@@ -388,30 +390,27 @@ Rules:
 def suggest_rubric_edits(
     report: str, rubric_text: str, client: anthropic.Anthropic
 ) -> str:
-    print("  Calling Claude for rubric edit suggestions...", flush=True)
-    try:
-        resp = client.messages.create(
-            # Shares score.py's MODEL rather than pinning its own string —
-            # this call was the one the last model bump nearly missed.
-            model=MODEL,
-            # Thinking is left at Sonnet 5's default (adaptive): unlike the
-            # extraction calls this one is open-ended analysis of where the
-            # rubric diverges from reality, which is what thinking is for.
-            # The budget is raised so thinking can't crowd out the suggestions.
-            max_tokens=16000,
-            system=_SUGGEST_SYSTEM,
-            messages=[{
-                "role": "user",
-                "content": (
-                    f"CURRENT RUBRIC:\n{rubric_text}\n\n"
-                    f"CALIBRATION REPORT:\n{report}\n\n"
-                    "Based on the discrepancies above, propose specific edits to rubric.md."
-                ),
-            }],
-        )
-    except anthropic.APIError as exc:
-        raise SystemExit(f"Rubric suggestion API call failed: {exc}")
-    return next((b.text for b in resp.content if b.type == "text"), "")
+    return llmcache.text_call(
+        client,
+        action="rubric edit suggestions",
+        # Shares score.py's MODEL rather than pinning its own string —
+        # this call was the one the last model bump nearly missed.
+        model=MODEL,
+        # Thinking is left at Sonnet 5's default (adaptive): unlike the
+        # extraction calls this one is open-ended analysis of where the
+        # rubric diverges from reality, which is what thinking is for.
+        # The budget is raised so thinking can't crowd out the suggestions.
+        max_tokens=16000,
+        system=_SUGGEST_SYSTEM,
+        messages=[{
+            "role": "user",
+            "content": (
+                f"CURRENT RUBRIC:\n{rubric_text}\n\n"
+                f"CALIBRATION REPORT:\n{report}\n\n"
+                "Based on the discrepancies above, propose specific edits to rubric.md."
+            ),
+        }],
+    )
 
 
 # --- Main ---------------------------------------------------------------------
@@ -449,7 +448,13 @@ def main() -> None:
         "--suggest-edits", action="store_true",
         help="call Claude to propose specific rubric.md edits (writes out/rubric-suggestions.md)",
     )
+    parser.add_argument(
+        "--no-llm-cache", action="store_true",
+        help="Re-run every Claude call instead of reusing .cache/llm/ "
+             "answers (the cache is still refreshed).",
+    )
     args = parser.parse_args()
+    llmcache.set_enabled(not args.no_llm_cache)
 
     try:
         from_date = dt.datetime.strptime(args.from_date, "%Y%m%d").date()

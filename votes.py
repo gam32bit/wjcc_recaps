@@ -35,6 +35,8 @@ import json
 
 import anthropic
 
+import llmcache
+
 from parse import AgendaItem, Vote
 from score import MODEL, compact_transcript
 
@@ -139,26 +141,20 @@ def extract(
         + "\n\nReport every roll-call vote."
     )
 
-    print("  Calling Claude to read the roll-call votes...", flush=True)
-    try:
-        resp = client.messages.create(
-            model=model,
-            max_tokens=8192,
-            # Explicitly off — see the _THINKING note in score.py.
-            thinking={"type": "disabled"},
-            output_config={
-                "effort": "medium",
-                "format": {"type": "json_schema", "schema": _SCHEMA},
-            },
-            system=_SYSTEM,
-            messages=[{"role": "user", "content": user_msg}],
-        )
-    except anthropic.APIError as exc:
-        raise SystemExit(f"Roll-call vote call failed: {exc}")
-
-    text = next((b.text for b in resp.content if b.type == "text"), None)
-    if not text:
-        raise SystemExit("Roll-call vote call returned no text.")
+    text = llmcache.text_call(
+        client,
+        action="roll-call votes",
+        model=model,
+        max_tokens=8192,
+        # Explicitly off — see the _THINKING note in score.py.
+        thinking={"type": "disabled"},
+        output_config={
+            "effort": "medium",
+            "format": {"type": "json_schema", "schema": _SCHEMA},
+        },
+        system=_SYSTEM,
+        messages=[{"role": "user", "content": user_msg}],
+    )
     return json.loads(text).get("votes", [])
 
 

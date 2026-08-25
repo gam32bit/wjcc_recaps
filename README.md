@@ -28,7 +28,13 @@ python make_newsletter.py --period 202608 --dry-run
 ```
 
 Output lands in `out/` (gitignored). Agenda fixtures live in `wjcc-fixtures/`;
-fetched transcripts and packet PDFs are cached in `.cache/`.
+fetched transcripts, packet PDFs, and Claude's answers are cached in `.cache/`.
+
+Every Claude call is cached by a hash of the whole request, so re-running a
+recap on unchanged inputs makes no API calls and costs nothing. Editing a
+prompt, bumping the model, or pointing at a different video changes the hash and
+re-runs that call, so the cache cannot serve a stale answer. Pass
+`--no-llm-cache` to any entry point to force a full re-run.
 
 ## What the modules do
 
@@ -42,6 +48,7 @@ fetched transcripts and packet PDFs are cached in `.cache/`.
 | `votes.py` | recover roll-call vote tallies from the meeting video |
 | `pdfslice.py` | cut one linkable PDF per agenda item out of the packet |
 | `render.py` | assemble the Markdown recap |
+| `llmcache.py` | cache every Claude answer on disk, keyed by the request that produced it |
 | `forecast.py` | rank a meeting's agenda *before* it happens, and score the prediction after |
 
 ## `docs/` and GitHub Pages

@@ -32,6 +32,8 @@ from dataclasses import dataclass, field
 
 import anthropic
 
+import llmcache
+
 from parse import agenda_preamble, parse_agenda
 from score import ScoredItem, compute_deterministic, finalize
 from triage import kept_items, triage
@@ -233,30 +235,20 @@ def draft(
     # Stream the draft: adaptive thinking and the JSON output share the
     # max_tokens budget, so we need generous headroom. The SDK refuses
     # large non-streaming requests (HTTP-timeout risk), hence .stream().
-    try:
-        with client.messages.stream(
-            model=model,
-            max_tokens=32000,
-            thinking={"type": "adaptive"},
-            output_config={
-                "effort": "medium",
-                "format": {"type": "json_schema", "schema": _DRAFT_SCHEMA},
-            },
-            system=_SYSTEM_PROMPT,
-            messages=[{"role": "user", "content": content}],
-        ) as stream:
-            response = stream.get_final_message()
-    except anthropic.APIError as exc:
-        raise SystemExit(f"Claude API call failed: {exc}")
-
-    if response.stop_reason == "refusal":
-        raise SystemExit("Claude refused to generate the draft.")
-    if response.stop_reason == "max_tokens":
-        raise SystemExit("Claude's response hit the token limit; raise max_tokens.")
-
-    text = next((b.text for b in response.content if b.type == "text"), None)
-    if text is None:
-        raise SystemExit("Claude returned no text content.")
+    text = llmcache.text_call(
+        client,
+        action="newsletter draft",
+        stream=True,
+        model=model,
+        max_tokens=32000,
+        thinking={"type": "adaptive"},
+        output_config={
+            "effort": "medium",
+            "format": {"type": "json_schema", "schema": _DRAFT_SCHEMA},
+        },
+        system=_SYSTEM_PROMPT,
+        messages=[{"role": "user", "content": content}],
+    )
 
     return draft_from_dict(json.loads(text))
 
@@ -284,7 +276,13 @@ def main() -> None:
     parser.add_argument("meta", type=pathlib.Path, help="meeting-meta JSON file")
     parser.add_argument("--top", type=int, default=5, help="top-N items to draft (default 5)")
     parser.add_argument("--json", action="store_true", help="print raw draft JSON")
+    parser.add_argument(
+        "--no-llm-cache", action="store_true",
+        help="Re-run every Claude call instead of reusing .cache/llm/ "
+             "answers (the cache is still refreshed).",
+    )
     args = parser.parse_args()
+    llmcache.set_enabled(not args.no_llm_cache)
 
     for p in (args.html, args.meta):
         if not p.is_file():

@@ -22,6 +22,8 @@ from dataclasses import dataclass, field
 
 import anthropic
 
+import llmcache
+
 from parse import AgendaItem
 from score import compact_transcript
 from titlematch import _LEAD_VERB_RE, _TITLE_MATCH_MIN, _content_words, _overlap
@@ -178,28 +180,22 @@ def classify_speakers(
         + "\n\nList each speaker and the topic they addressed."
     )
 
-    print("  Calling Claude to identify public-comment speakers...", flush=True)
-    try:
-        resp = client.messages.create(
-            model=model,
-            max_tokens=8192,
-            # Explicitly off: Sonnet 5 thinks by default when the field is
-            # omitted, and thinking would share this budget with the speaker
-            # JSON. See the _THINKING note in score.py.
-            thinking={"type": "disabled"},
-            output_config={
-                "effort": "medium",
-                "format": {"type": "json_schema", "schema": _SCHEMA},
-            },
-            system=_SYSTEM,
-            messages=[{"role": "user", "content": user_msg}],
-        )
-    except anthropic.APIError as exc:
-        raise SystemExit(f"Public-comment speaker call failed: {exc}")
-
-    text = next((b.text for b in resp.content if b.type == "text"), None)
-    if not text:
-        raise SystemExit("Public-comment speaker call returned no text.")
+    text = llmcache.text_call(
+        client,
+        action="public-comment speakers",
+        model=model,
+        max_tokens=8192,
+        # Explicitly off: Sonnet 5 thinks by default when the field is
+        # omitted, and thinking would share this budget with the speaker
+        # JSON. See the _THINKING note in score.py.
+        thinking={"type": "disabled"},
+        output_config={
+            "effort": "medium",
+            "format": {"type": "json_schema", "schema": _SCHEMA},
+        },
+        system=_SYSTEM,
+        messages=[{"role": "user", "content": user_msg}],
+    )
 
     return validate(json.loads(text).get("speakers", []), items, pc_ranges)
 

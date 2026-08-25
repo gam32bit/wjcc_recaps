@@ -73,6 +73,12 @@ an LLM judgment call? Prefer the signal.
 - Fixtures in `wjcc-fixtures/`; generated output in `out/`; fetched
   PDFs/transcripts cached in `.cache/` (`out/`, `.cache/`, `.env` all
   gitignored).
+- **Every Claude call is cached to `.cache/llm/`** by `llmcache.py`, keyed by a
+  hash of the whole request (model, prompt, schema, transcript), so re-running
+  the pipeline on unchanged inputs costs nothing. Edit a prompt or bump the
+  model and the key changes and the call is re-made — the cache cannot go
+  stale. Entries are readable JSON; delete one to force that call, or pass
+  `--no-llm-cache` to re-run all of them.
 - Repo is `git@github.com:gam32bit/wjcc_recaps.git` (public, branch `main`).
   Dev logs, `out/`, `.cache/`, `.env` and the packet PDFs are never committed.
 - **`docs/` IS committed** — GitHub Pages serves it, and that is how the recap

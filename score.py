@@ -39,6 +39,8 @@ from dataclasses import dataclass, field
 
 import anthropic
 
+import llmcache
+
 from parse import AgendaItem, agenda_preamble, parse_agenda
 from triage import TriageResult, kept_items, triage
 
@@ -323,25 +325,19 @@ def segment_transcript(
         + "\n\nFor each agenda item, return the time ranges where it was discussed."
     )
 
-    print("  Calling Claude for transcript segmentation...", flush=True)
-    try:
-        resp = client.messages.create(
-            model=MODEL,
-            max_tokens=8192,
-            thinking=_THINKING,
-            output_config={
-                "effort": "medium",
-                "format": {"type": "json_schema", "schema": _SEGMENTATION_SCHEMA},
-            },
-            system=_SEGMENTATION_SYSTEM,
-            messages=[{"role": "user", "content": user_msg}],
-        )
-    except anthropic.APIError as exc:
-        raise SystemExit(f"Segmentation API call failed: {exc}")
-
-    text = next((b.text for b in resp.content if b.type == "text"), None)
-    if not text:
-        raise SystemExit("Segmentation call returned no text.")
+    text = llmcache.text_call(
+        client,
+        action="transcript segmentation",
+        model=MODEL,
+        max_tokens=8192,
+        thinking=_THINKING,
+        output_config={
+            "effort": "medium",
+            "format": {"type": "json_schema", "schema": _SEGMENTATION_SCHEMA},
+        },
+        system=_SEGMENTATION_SYSTEM,
+        messages=[{"role": "user", "content": user_msg}],
+    )
 
     def _minutes(ranges: list[dict]) -> float:
         return sum(max(0.0, r["end_seconds"] - r["start_seconds"]) / 60.0 for r in ranges)
@@ -441,25 +437,19 @@ def score_rubric(
     )
     user_msg = f"RUBRIC:\n{rubric_text}\n\nAGENDA ITEMS:\n{items_block}\n\nScore each item 0-5."
 
-    print("  Calling Claude for rubric scoring...", flush=True)
-    try:
-        resp = client.messages.create(
-            model=MODEL,
-            max_tokens=8192,
-            thinking=_THINKING,
-            output_config={
-                "effort": "medium",
-                "format": {"type": "json_schema", "schema": _RUBRIC_SCHEMA},
-            },
-            system=_RUBRIC_SYSTEM,
-            messages=[{"role": "user", "content": user_msg}],
-        )
-    except anthropic.APIError as exc:
-        raise SystemExit(f"Rubric API call failed: {exc}")
-
-    text = next((b.text for b in resp.content if b.type == "text"), None)
-    if not text:
-        raise SystemExit("Rubric call returned no text.")
+    text = llmcache.text_call(
+        client,
+        action="rubric scoring",
+        model=MODEL,
+        max_tokens=8192,
+        thinking=_THINKING,
+        output_config={
+            "effort": "medium",
+            "format": {"type": "json_schema", "schema": _RUBRIC_SCHEMA},
+        },
+        system=_RUBRIC_SYSTEM,
+        messages=[{"role": "user", "content": user_msg}],
+    )
 
     data = json.loads(text)
     scores_by_number: dict[str, tuple[int, str]] = {
@@ -663,7 +653,13 @@ def main() -> None:
                         help="YouTube URL for the work session transcript")
     parser.add_argument("--dry-run", action="store_true",
                         help="deterministic signals only, no API calls")
+    parser.add_argument(
+        "--no-llm-cache", action="store_true",
+        help="Re-run every Claude call instead of reusing .cache/llm/ "
+             "answers (the cache is still refreshed).",
+    )
     args = parser.parse_args()
+    llmcache.set_enabled(not args.no_llm_cache)
 
     for p in (args.html, args.meta):
         if not p.is_file():

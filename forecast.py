@@ -39,6 +39,8 @@ import sys
 
 import anthropic
 
+import llmcache
+
 import carryforward
 from titlematch import _LEAD_VERB_RE, _TITLE_MATCH_MIN
 from parse import AgendaItem, Attachment, Vote, agenda_preamble, parse_agenda
@@ -631,7 +633,13 @@ def main() -> None:
         "--top", type=int, default=DEFAULT_TOP,
         help=f"how many likely highlights to detail (default {DEFAULT_TOP})",
     )
+    parser.add_argument(
+        "--no-llm-cache", action="store_true",
+        help="Re-run every Claude call instead of reusing .cache/llm/ "
+             "answers (the cache is still refreshed).",
+    )
     args = parser.parse_args()
+    llmcache.set_enabled(not args.no_llm_cache)
 
     if args.check:
         check(args.check)
