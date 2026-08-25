@@ -324,7 +324,7 @@ def _public_comment_tally(
         text, all_items, client, pc_ranges=pc_ranges
     )
     speakers = pubcomment.attach_off_agenda(speakers, all_items)
-    result = pubcomment.tally(speakers, all_items, pc_ranges)
+    result = pubcomment.tally(speakers, all_items, pc_ranges, snippets)
     pubcomment.apply_to_signals(scored, result)
 
     path = OUT_DIR / f"recap-pubcomment-{date}.json"
@@ -486,25 +486,29 @@ def _packet_paths(
     return paths, attachments
 
 
-def _load_quotes(period: str) -> tuple[dict[str, dict], dict[str, dict]]:
+def _load_quotes(
+    period: str,
+) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
     """Maintainer-chosen quotes for this period, from `quotes-<period>.json`.
 
     Returns (one quote per agenda item, one excerpt per public-comment
-    speaker). Human-owned in the way `rubric.md` is: a person watches the
+    speaker, one roll-call note per item — who was absent or abstaining, named
+    by a person because the captions cannot name them; see `render._who`). Human-owned in the way `rubric.md` is: a person watches the
     meeting, picks the line, and records where it came from. Nothing in the
     pipeline writes this file, and a period without one renders no quotes.
     """
     path = PROJECT_DIR / f"quotes-{period}.json"
     if not path.is_file():
         print(f"  No {path.name} — rendering without quotes.")
-        return {}, {}
+        return {}, {}, {}
     data = json.loads(path.read_text())
     items = data.get("items", {})
     speakers = data.get("speakers", {})
+    vote_notes = data.get("votes", {})
     n_speakers = sum(len(v) for v in speakers.values())
-    print(f"  {len(items)} item quote(s) and {n_speakers} speaker excerpt(s) "
-          f"from {path.name}.")
-    return items, speakers
+    print(f"  {len(items)} item quote(s), {n_speakers} speaker excerpt(s) and "
+          f"{len(vote_notes)} roll-call note(s) from {path.name}.")
+    return items, speakers, vote_notes
 
 
 def run_period(
@@ -608,7 +612,9 @@ def run_period(
             # who named an item from the OTHER meeting has to be reconnected —
             # deterministically, not by re-prompting.
             speakers = pubcomment.attach_off_agenda(speakers, all_items)
-            meeting_tally = pubcomment.tally(speakers, all_items, pc_ranges)
+            meeting_tally = pubcomment.tally(
+                speakers, all_items, pc_ranges, snippets
+            )
             tallies.append(meeting_tally)
             all_speakers += speakers
             pc_ranges_by_meeting[source.numberdate] = pc_ranges
@@ -686,7 +692,7 @@ def run_period(
     # --- Step 5: render + save ---
     ordered = sorted(sources, key=lambda s: s.numberdate)
     item_slices, attachment_slices = _packet_paths(ordered)
-    quotes, speaker_quotes = _load_quotes(period)
+    quotes, speaker_quotes, vote_notes = _load_quotes(period)
     body = render_recap(
         result.logistics,
         top_items,
@@ -705,6 +711,7 @@ def run_period(
         attachment_paths=attachment_slices,
         quotes=quotes,
         speaker_quotes=speaker_quotes,
+        vote_notes=vote_notes,
     )
 
     score_path = OUT_DIR / f"recap-score-{period}.json"

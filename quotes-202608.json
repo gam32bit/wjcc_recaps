@@ -36,10 +36,25 @@
     "count becomes 11, not 10. Check that 2069 matches the anchor the run",
     "actually produces; a key that misses simply renders no excerpt.",
     "",
-    "FIXES in speaker excerpts: 797 has [rezoned] for the captions' 'reszoned';",
-    "2069 has 'three-letter' for the captions' 'threeletter'. Speaker 3 (1063)",
-    "is deliberately excerpt-less — nothing he said stands up as a short quote,",
-    "and a blank there is honest; the timestamp still works."
+    "FIXES in speaker excerpts: 790 has [rezoned] for the captions' 'reszoned'.",
+    "Speaker 3 (1056) is deliberately excerpt-less — nothing he said stands up",
+    "as a short quote, and a blank there is honest; the timestamp still works.",
+    "",
+    "The keys here are ANCHORS, and re-running classify_speakers moves them a",
+    "few seconds when its prompt changes. The August 2026 keys were re-mapped",
+    "once, on 2026-08-25, when the subtopic field was added: each moved 1-13s,",
+    "in order, one-to-one. One excerpt was dropped in that pass — 2069, 'put a",
+    "[three-letter] identifier ahead of the message' — because no speaker is",
+    "placed there any more. Re-key it by hand if that speaker is real.",
+    "",
+    "'votes' names the members a roll call recorded as ABSENT or ABSTAINING,",
+    "keyed by the same namespaced item number. This is the one place a member's",
+    "name reaches the page, and it is here — in the human's file — because the",
+    "captions cannot support it: votes.py reads the roll call off an ASR track",
+    "that spells Cavazos as Kvassos, Kabaso and Vasquez. A name goes in only",
+    "after a person has checked the caption roll call against the board's real",
+    "roster and written down how they did it in 'note'. Leave the block out and",
+    "the tally prints '(1 absent)', which is always true."
   ],
 
   "items": {
@@ -50,7 +65,6 @@
       "start_seconds": 3893,
       "note": "Two spans: the first from 1:04:53 (the anchor), the second from 1:06:27. The first ellipsis drops the captions' 'and concerns', which garbles the sentence. Speaker established in the video, not from a caption spelling: she introduces herself at 1:02:48 ('This is Jen') and a fellow member answers 'to Ms. Chen's point' at 1:09:27."
     },
-
     "0804-8.07": {
       "text": "I'm happy to see our teachers and staff are continuing to get a little bigger piece of the pie when it comes to compensation with this extra money. I'm thrilled to see the … hour day change for our related services positions in there.",
       "speaker": "Mr. Hodges, school board member",
@@ -62,16 +76,24 @@
 
   "speakers": {
     "20260818": {
-      "797":  "everything along Oldtown Road to be [rezoned] for Lafayette",
+      "790":  "everything along Oldtown Road to be [rezoned] for Lafayette",
       "941":  "I respectfully request transparency in this new process.",
-      "1198": "Please revisit the June survey results",
-      "1338": "What should unite our children?",
-      "1468": "Let's celebrate unity, not diversity.",
-      "1614": "start with the incoming freshman class",
-      "1746": "they seem to lack representation here",
-      "1828": "encourage the school board to revisit the matter",
-      "1922": "would it be that hard to reopen the conversation?",
-      "2069": "put a three-letter identifier ahead of the message"
+      "1188": "Please revisit the June survey results",
+      "1329": "What should unite our children?",
+      "1459": "Let's celebrate unity, not diversity.",
+      "1601": "start with the incoming freshman class",
+      "1745": "they seem to lack representation here",
+      "1830": "encourage the school board to revisit the matter",
+      "1922": "would it be that hard to reopen the conversation?"
+    }
+  },
+
+  "votes": {
+    "0804-8.07": {
+      "absent": [
+        "Michael Hosang"
+      ],
+      "note": "By elimination against the board's own roster, which the district publishes in its BoardDocs vote records (see the 'Aye:' lines in wjcc-fixtures/agenda-2026*.html): Cavazos, Chen, Donnor, Hodges, Hosang, Hundley, Riffle. Six answered this roll call — Riffle, Cavazos ('Dr. Kavas'/'Ms. Vasquez'), Chen, Hodges, Hundley ('Mrs. Hunley') and Donnor — and Hosang is the member left over. Cross-checks: he is called first at every Aug 4 roll call with no answer (the captions render that call as 'Miss Auler'/'Ms. Oller'), and he votes at every Aug 18 roll call, where Donnor is the one missing. CONFIRM AGAINST THE VIDEO BEFORE PUBLISHING — this is an inference from a caption track, not a minute book."
     }
   }
 }

@@ -31,7 +31,15 @@ have to be honest and defensible to readers, not "our AI thinks these matter."
      and attributed (trimmed to two sentences, with "read more" pointing at the
      district's own page in the packet — see `pdfslice.py`);
   2. counted tallies — public-comment speakers, vote counts — each speaker
-     linked to their turn in the video, so the number of links IS the count;
+     linked to their turn in the video, so the number of links IS the count.
+     Under a highlight the speakers are grouped by what each of them asked the
+     board for; the labels are the model's, in the same narrow role it plays
+     for off-agenda topics (one turn in, a few words out, checkable against
+     the timestamp beside it), and the grouping and counting under them are
+     plain Python — see `pubcomment.group_subtopics`. Members' names appear in
+     one place only, a roll call's absentees, and only when a person has
+     written the name into `quotes-<period>.json` after checking the captions
+     against the board's published roster;
   3. **a quote from the meeting video, chosen by the maintainer** and recorded
      in `quotes-<period>.json`. Nothing in the pipeline picks, writes or ranks
      these; a person watches the meeting and puts the line in the file. The

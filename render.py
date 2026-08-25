@@ -7,9 +7,10 @@ from score.py, and the public-comment tally from pubcomment.py.
 The recap contains no model-written prose at all. A highlight carries the
 maintainer's chosen quote from the meeting video (quotes-<period>.json), the
 signals that ranked the item, the agenda item's own title and verbatim
-BACKGROUND text as an attributed block quote, the parsed vote tally, and the
-counted public-comment speakers. The preview product still uses write.py's
-drafted prose.
+BACKGROUND text as an attributed block quote, the documents filed with it by
+name, the parsed vote tally, and the counted public-comment speakers, grouped
+by what each of them asked the board for. The preview product still uses
+write.py's drafted prose.
 
 Meeting logistics come straight from the (never-sent-to-Claude) Logistics
 record, so date, times, locations, and the livestream URL are always exact.
@@ -172,7 +173,30 @@ def _attachment_url(
     return f"{PACKET_BASE_URL}{rel}" if rel else None
 
 
-def _vote_tally_line(item: AgendaItem, video_url: str | None = None) -> str | None:
+def _who(names: list[str] | None, count: int, state: str) -> str:
+    """'Michael Hosang absent', or '1 absent' when nobody was named.
+
+    Names come from the maintainer's `quotes-<period>.json`, never from the
+    roll call itself: `votes.py` reads that off an auto-caption track that
+    spells one member Kvassos, Kabaso and Vasquez in a single evening. A person
+    who has checked the captions against the board's published roster can write
+    the name down, with their reasoning, and this prints it. The count is the
+    fallback and is always true.
+
+    A supplied list that does not match what the roll call counted is ignored —
+    the tally is the record, and a name list disagreeing with it means the file
+    is stale, not that the count is wrong.
+    """
+    if names and len(names) == count:
+        return f"{', '.join(names)} {state}"
+    return f"{count} {state}"
+
+
+def _vote_tally_line(
+    item: AgendaItem,
+    video_url: str | None = None,
+    vote_notes: dict[str, dict] | None = None,
+) -> str | None:
     """Deterministic vote-tally line for a recap highlight, e.g.
     '**Vote tally:** Approved 7-0 (moved by Randy Riffle, seconded by ...)'.
 
@@ -193,11 +217,12 @@ def _vote_tally_line(item: AgendaItem, video_url: str | None = None) -> str | No
         return None
     line = f"**Vote tally:** {vote_summary(item)}"
     if v.source == "transcript":
+        named = (vote_notes or {}).get(item.number) or {}
         detail = []
         if v.abstain:
-            detail.append(f"{len(v.abstain)} abstaining")
+            detail.append(_who(named.get("abstain"), len(v.abstain), "abstaining"))
         if v.absent:
-            detail.append(f"{len(v.absent)} absent")
+            detail.append(_who(named.get("absent"), len(v.absent), "absent"))
         if detail:
             line += f" ({', '.join(detail)})"
         # No roll-call deep link. Across the 27 votes recovered from the two
@@ -227,9 +252,38 @@ def _watch_url(video_url: str | None, start_seconds: float | None) -> str | None
 
 
 def _attachment_label(name: str) -> str:
-    """Drop a trailing file-size annotation like ' (905 KB)' from a link label."""
+    """Drop a trailing file-size annotation like ' (905 KB)' and the extension.
+
+    What is left is the district's own filename, which is what the document is
+    called and the only description of it anyone has — staff name these things
+    ("Redistricting Update - August 4 2026 SB Presentation"), and a name the
+    reader can see beats a count they cannot.
+    """
     cleaned = re.sub(r"\s*\(\d[\d.,]*\s*[KMG]B\)\s*$", "", name).strip()
+    cleaned = re.sub(r"(?i)\.(pdf|docx?|xlsx?|pptx?)$", "", cleaned).strip()
     return cleaned or name
+
+
+def _attachments_block(item: AgendaItem, slice_url: str | None) -> list[str]:
+    """Name every document filed with this item, each linked where one can be.
+
+    A BoardDocs agenda links its attachments directly and those URLs are the
+    district's own. A Diligent packet embeds them instead, so the linkable copy
+    is the slice `pdfslice.py` cut — one PDF holding that packet page's
+    documents, which is why several names can share one link. A name with
+    neither is still printed: the reader learns the document exists and can ask
+    for it, which "1 attachment" never told them.
+    """
+    if not item.attachments:
+        return []
+    rows = []
+    for a in item.attachments:
+        label = _attachment_label(a.name)
+        url = a.url or slice_url
+        rows.append(f"- [{label}]({url})" if url else f"- {label}")
+    if len(rows) == 1:
+        return [f"**Attachment(s):** {rows[0][2:]}", ""]
+    return ["**Attachment(s):**", ""] + rows + [""]
 
 
 # Standing procedural facts about public comment. These are NOT in the agenda
@@ -456,13 +510,25 @@ def _cost_line(item: AgendaItem) -> str | None:
     return f"**Cost budgeted:** {cost}"
 
 
+def _round_minutes(minutes: float) -> str:
+    """A discussion length as whole minutes, e.g. '6 min'.
+
+    Rounded half up rather than with `round()`, which rounds halves to even —
+    2.5 min would print as "2 min" and 1.5 as "2". Anything that rounds to zero
+    prints as "under 1 min" instead: the item was discussed (the clause is only
+    built when the minutes are above zero), and "Discussed 0 min" says the
+    opposite of what the measurement found.
+    """
+    whole = int(minutes + 0.5)
+    return "under 1 min" if whole < 1 else f"{whole} min"
+
+
 def _signal_line(
     s: ScoredItem,
     *,
     dollars: bool,
     meeting_video: str | None,
     work_session_video: str | None,
-    attachment_url: str | None,
 ) -> str | None:
     """Why this item is a highlight, as the measured signals that ranked it.
 
@@ -473,51 +539,51 @@ def _signal_line(
     makes sense in a reader-facing recap.
 
     Dropped relative to `evidence_line`: the vote outcome (the full tally gets
-    its own line below) and the rubric score (an internal ranking input a reader
-    has no way to check). Clauses whose data is absent are dropped, so the line
-    degrades rather than lying.
+    its own line below), the rubric score (an internal ranking input a reader
+    has no way to check), and the attachment count (the documents are named on
+    their own line — see `_attachments_block`). Clauses whose data is absent are
+    dropped, so the line degrades rather than lying.
     """
+    timings: list[str] = []
     parts: list[str] = []
 
     def timed(minutes: float, label: str, video: str | None, start: float | None) -> None:
         # The verb goes in front of the FIRST timing clause only. An item
-        # measured at both meetings would otherwise read "Discussed 6.3 min at
-        # the meeting · Discussed 48.4 min at the work session".
-        verb = "Discussed " if not parts else ""
-        clause = f"{verb}{minutes:.1f} min {label}"
+        # measured at both meetings would otherwise read "Discussed 6 min at
+        # the regular meeting and Discussed 48 min at the work session".
+        verb = "Discussed " if not timings else ""
+        clause = f"{verb}{_round_minutes(minutes)} {label}"
         if (url := _watch_url(video, start)) and start is not None:
             clause += f" [(Watch)]({url})"
-        parts.append(clause)
+        timings.append(clause)
 
     if s.signals.meeting_minutes > 0:
-        timed(s.signals.meeting_minutes, "at the meeting",
+        timed(s.signals.meeting_minutes, "at the regular meeting",
               meeting_video, s.signals.meeting_start_seconds)
     if s.signals.work_session_minutes > 0:
         timed(s.signals.work_session_minutes, "at the work session",
               work_session_video, s.signals.work_session_start_seconds)
     # Older saved score JSON predates the meeting/work-session split, and knows
     # only a total. No "at the ..." to append, and the verb is already in front.
-    if not parts and s.signals.discussion_minutes > 0:
-        parts.append(f"Discussed {s.signals.discussion_minutes:.1f} min")
+    if not timings and s.signals.discussion_minutes > 0:
+        timings.append(f"Discussed {_round_minutes(s.signals.discussion_minutes)}")
 
-    if (n := s.signals.public_comment_speakers):
-        parts.append(f"{n} {'person' if n == 1 else 'people'} spoke")
+    # An item discussed at both meetings reads as one sentence — "Discussed 6
+    # min at the regular meeting (Watch) and 48 min at the work session
+    # (Watch)" — rather than as two clauses divided by a bullet.
+    if timings:
+        parts.append(" and ".join(timings))
+
     if s.signals.carry_forward_note:
         parts.append(f"prior comment: {s.signals.carry_forward_note}")
     if dollars and s.signals.dollar_raw:
         parts.append(s.signals.dollar_raw)
     if s.signals.is_routine:
         parts.append("routine")
-    if (n := s.signals.attachment_count):
-        clause = f"{n} attachment{'s' if n != 1 else ''}"
-        # Unlinked when no slice was cut for this item — a Diligent packet
-        # embeds its documents, so the only linkable copy is one pdfslice.py
-        # wrote. Plain text beats a link that goes nowhere.
-        parts.append(f"[{clause}]({attachment_url})" if attachment_url else clause)
 
     if not parts:
         return None
-    return "**Why it's here:** " + " · ".join(parts)
+    return " · ".join(parts)
 
 
 def _block_quote(text: str) -> list[str]:
@@ -581,80 +647,67 @@ def _meeting_video(
     return meeting_video or work_session_video
 
 
-def _grouped_by_meeting(
-    items: list[AgendaItem], period_meetings: list[dict] | None
-) -> list[tuple[str, list[AgendaItem]]]:
-    """Split a list into (meeting label, items), in meeting order.
-
-    One group with an empty label when this is not a period recap, so the
-    caller renders a flat list exactly as it always did.
-    """
-    if not period_meetings:
-        return [("", items)]
-    groups: list[tuple[str, list[AgendaItem]]] = []
-    for m in period_meetings:
-        prefix = m["numberdate"][4:]
-        got = [i for i in items if i.number.partition("-")[0] == prefix]
-        if got:
-            groups.append((m["label"], got))
-    placed = {id(i) for _, g in groups for i in g}
-    if (rest := [i for i in items if id(i) not in placed]):
-        groups.append(("", rest))
-    return groups
-
-
 def _remaining_by_meeting(
     actions: list[AgendaItem],
     consent: list[AgendaItem],
     period_meetings: list[dict] | None,
-) -> list[tuple[str, list[AgendaItem], list[AgendaItem]]]:
-    """(meeting label, its other action items, its consent agenda), in order.
+) -> list[tuple[str, str | None, list[AgendaItem], list[AgendaItem]]]:
+    """(label, agenda URL, its other action items, its consent agenda), in order.
 
-    Seeded from `period_meetings` so the meetings stay in date order. Building
-    the dict from the two passes instead put a meeting whose action items were
-    all highlighted — it reaches the dict only on the consent pass — after every
-    meeting that still had action items to show.
+    Walked in `period_meetings` order so the meetings stay in date order, and
+    matched on the item-number PREFIX rather than on the label: the prefix is
+    the key `merge.py` namespaced each number with, and matching prose would
+    fail silently into the wrong meeting the day a label is reworded.
+
+    A meeting whose items were all highlighted drops out; anything whose number
+    matches no meeting is grouped last under an empty label, so nothing is lost.
     """
-    by_label: dict[str, tuple[list, list]] = {
-        m["label"][:1].upper() + m["label"][1:]: ([], [])
-        for m in (period_meetings or [])
-    }
-    for n, items in ((0, actions), (1, consent)):
-        for where, group in _grouped_by_meeting(items, period_meetings):
-            label = where[:1].upper() + where[1:] if where else ""
-            by_label.setdefault(label, ([], []))[n].extend(group)
-    return [(label, a, c) for label, (a, c) in by_label.items() if a or c]
+    if not period_meetings:
+        return [("", None, actions, consent)]
+    groups: list[tuple[str, str | None, list, list]] = []
+    placed: set[int] = set()
+    for m in period_meetings:
+        prefix = m["numberdate"][4:]
+        mine = tuple(
+            [i for i in group if i.number.partition("-")[0] == prefix]
+            for group in (actions, consent)
+        )
+        placed.update(id(i) for g in mine for i in g)
+        if any(mine):
+            label = m["label"][:1].upper() + m["label"][1:]
+            groups.append((label, m.get("agenda"), *mine))
+    rest = tuple([i for i in group if id(i) not in placed]
+                 for group in (actions, consent))
+    if any(rest):
+        groups.append(("", None, *rest))
+    return groups
 
 
-def _remainder_summary(actions: list[AgendaItem], consent: list[AgendaItem]) -> str:
-    """One line for a meeting's routine business: how much, and what split.
+def _action_line(item: AgendaItem) -> str:
+    """One routine action item: its own title, and how the board voted."""
+    tally = vote_summary(item)
+    title = " ".join(item.title.split())
+    return f"  - {title} — **{tally}**" if item.vote else f"  - {title}"
 
-    These used to be two full bullet lists — 20 titles for August, most of them
-    "Approved 6-0" — which buried the two or three that a reader would actually
-    stop on. What survives the collapse is the part that carries information:
-    the counts, whether everything passed, and the name of anything that did
-    NOT pass unanimously. All counted, none judged.
+
+def _consent_summary(consent: list[AgendaItem]) -> str:
+    """The consent agenda as one line: how many, and anything not unanimous.
+
+    A consent agenda is voted as a block — printing its titles is printing the
+    same tally eight times — so it stays a total. What does not collapse is an
+    item that failed or split, and the block vote makes that the whole block:
+    named, not counted away.
     """
-    counts = []
-    if actions:
-        counts.append(f"{len(actions)} action item"
-                      f"{'s' if len(actions) != 1 else ''}")
-    if consent:
-        counts.append(f"a {len(consent)}-item consent agenda")
-    voted = [i for i in actions + consent if i.vote]
-    unvoted = len(actions) + len(consent) - len(voted)
-
-    line = " and ".join(counts)
+    n = len(consent)
+    line = f"Consent agenda: {n} item{'s' if n != 1 else ''}"
+    voted = [i for i in consent if i.vote]
     failed = [i for i in voted if not i.vote.passed]
     if voted and not failed:
         line += ", all approved"
-    if unvoted:
+    if (unvoted := n - len(voted)):
         line += f" ({unvoted} with no recorded vote)"
     line += "."
 
-    # Anything that did not pass, or did not pass unanimously, is named: those
-    # are the one or two lines of this section a reader might stop on, and a
-    # bare count would hide them.
     def named(items: list[AgendaItem]) -> str:
         return "; ".join(f"{i.title} (**{vote_summary(i)}**)" for i in items)
 
@@ -756,6 +809,12 @@ def _quote_block(
     return lines + [""]
 
 
+# The lead-in over every list of speaker timestamps under a highlight. A bare
+# timestamp does not announce that it is a link into the recording at that
+# speaker's turn.
+_TIMESTAMP_NOTE = "Timestamps open the meeting recording at each speaker's turn:"
+
+
 def _speaker_excerpt(anchor, speaker_quotes: dict[str, dict] | None) -> str:
     """The maintainer's short excerpt for one public-comment speaker, if any.
 
@@ -787,34 +846,51 @@ def _highlight_speakers(
     period_meetings: list[dict] | None,
     meeting_video: str | None,
     work_session_video: str | None,
-    speaker_quotes: dict[str, dict] | None = None,
 ) -> list[str]:
     """The speaker tally for ONE highlighted item, inline under that highlight.
 
     Same rule as the section below: one link per speaker, so the number of
     links IS the count and a reader who doubts it can check in five seconds.
+    What the speakers said is a word count (`_word_line`), not a quote.
     """
-    links = []
-    for a in topic.anchors:
+    def stamp(a) -> str | None:
         url = _watch_url(
             _speaker_video(a, period_meetings, meeting_video, work_session_video),
             a.start_seconds,
         )
-        if not url:
-            continue
-        row = f"- [{_clock(a.start_seconds)}]({url})"
-        if (excerpt := _speaker_excerpt(a, speaker_quotes)):
-            row += f" — “{excerpt}”"
-        links.append(row)
+        return f"[{_clock(a.start_seconds)}]({url})" if url else None
+
     n = topic.count
-    line = f"**Public comment:** {n} {'person' if n == 1 else 'people'} spoke on this item"
+    lines = [f"**Public comment:** {n} public comment speaker"
+             f"{'s' if n != 1 else ''} on this item.", ""]
+
+    # Grouped by what each speaker asked for, when the speakers actually split
+    # into groups (see `pubcomment.group_subtopics`, which returns nothing when
+    # they do not). Six timestamps in a row say six people cared; the groups say
+    # what six people wanted, and the timestamps under each are still one per
+    # speaker, so the links keep adding up to the count.
+    if topic.subtopics:
+        rows = []
+        for group in topic.subtopics:
+            stamps = [t for a in group.anchors if (t := stamp(a))]
+            head = f"- **{group.label[:1].upper() + group.label[1:]}**"
+            # A group of one is just that speaker, so the count would only be
+            # restating the single link beside it. Say "2 speakers" when the
+            # number is the point.
+            if group.count > 1:
+                head += f" — {group.count} speakers"
+            rows.append(f"{head} — {' · '.join(stamps)}" if stamps else head)
+        return lines + [_TIMESTAMP_NOTE, ""] + rows + [""]
+
+    links = [f"- {t}" for a in topic.anchors if (t := stamp(a))]
     if not links:
-        return [line + ".", ""]
+        return lines
     # One timestamp per line, under a lead-in that says what a timestamp IS.
     # Run together on one row they read as a reference code rather than as an
-    # invitation to click, and six of them wrapped mid-link.
-    return ([line + ". Each timestamp opens the video at that speaker's turn:", ""]
-            + links + [""])
+    # invitation to click, and six of them wrapped mid-link. Inside a subtopic
+    # group above they DO run together: one or two per line, behind a label
+    # that says what the click is for.
+    return lines + [_TIMESTAMP_NOTE, ""] + links + [""]
 
 
 def _public_comment_section(
@@ -919,6 +995,7 @@ def render_recap(
     attachment_paths: dict[str, str] | None = None,
     quotes: dict[str, dict] | None = None,
     speaker_quotes: dict[str, dict] | None = None,
+    vote_notes: dict[str, dict] | None = None,
 ) -> str:
     """Render the post-meeting recap: top highlights + vote-count lists.
 
@@ -947,6 +1024,7 @@ def render_recap(
     # This replaces the footer's single "Watch the full meeting" line, which
     # could only ever name one video of the two.
     agenda_link = _agenda_url(meeting_unique)
+    linked_agendas = False
     if period_meetings:
         names = []
         for m in period_meetings:
@@ -961,6 +1039,7 @@ def render_recap(
                 links.append(f"[Watch]({url})")
             if (url := m.get("agenda")):
                 links.append(f"[Agenda]({url})")
+                linked_agendas = True
             label = m["label"]
             if links:
                 label += " (" + " / ".join(links) + ")"
@@ -971,7 +1050,13 @@ def render_recap(
         # link instead. This is also the line that replaced the footer's old
         # "Watch the full meeting:" for a single-meeting recap.
         lines += [f"*[Watch the full meeting]({url})*", ""]
-    lines += [f"[Full agenda]({agenda_link})", ""]
+    # Only when the line above did not already link an agenda per meeting. Two
+    # meetings each carrying their own [Agenda] link, under a third link
+    # labelled "Full agenda" that can only point at one of them (or at the
+    # district's landing page), is one link too many and the vaguest one wins
+    # the reader's attention.
+    if not linked_agendas:
+        lines += [f"[Full agenda]({agenda_link})", ""]
 
     # --- Highlights (agenda title + the agenda's own description) ---
     lines += ["## Highlights", ""]
@@ -994,7 +1079,6 @@ def render_recap(
             dollars=not cost,
             meeting_video=meeting_video,
             work_session_video=work_session_video,
-            attachment_url=_attachment_url(s.item, attachment_paths),
         )
         if signals:
             lines += [signals, ""]
@@ -1021,17 +1105,9 @@ def render_recap(
         if cost:
             lines += [cost, ""]
 
-        # A BoardDocs agenda links its attachments directly, and those URLs are
-        # the district's own — worth naming one per line. A Diligent packet
-        # embeds them instead, and there the signal line's "N attachments" link
-        # to the packet slice is the whole answer, so nothing is listed here.
-        if any(a.url for a in s.item.attachments):
-            lines += ["**Documents:**", ""]
-            lines += [
-                f"- [{_attachment_label(a.name)}]({a.url})"
-                for a in s.item.attachments if a.url
-            ]
-            lines.append("")
+        lines += _attachments_block(
+            s.item, _attachment_url(s.item, attachment_paths)
+        )
 
         tally = _vote_tally_line(
             s.item,
@@ -1039,6 +1115,7 @@ def render_recap(
                 s.item.number, period_meetings,
                 meeting_video=meeting_video, work_session_video=work_session_video,
             ),
+            vote_notes,
         )
         if tally:
             lines += [tally, ""]
@@ -1046,7 +1123,6 @@ def render_recap(
         if (topic := pc_by_item.get(s.item.number)):
             lines += _highlight_speakers(
                 topic, period_meetings, meeting_video, work_session_video,
-                speaker_quotes,
             )
 
     # --- Public comment on everything the highlights did not cover ---
@@ -1063,18 +1139,28 @@ def render_recap(
     consent = [i for i in consent_items if i.number not in top_numbers]
     if other_actions or consent:
         lines += ["## Other Agenda Items", ""]
-        for where, actions, batch in _remaining_by_meeting(
+        for where, agenda, actions, batch in _remaining_by_meeting(
             other_actions, consent, period_meetings
         ):
-            summary = _remainder_summary(actions, batch)
-            lines += [f"- **{where}** — {summary}" if where else f"- {summary}"]
-        # No "see the full agenda for the rest" line. `_agenda_url` falls back
-        # to the district's meetings LANDING page whenever the packet carries
-        # no BoardDocs id — which is every Diligent meeting — and that page
-        # shows the next meeting, not this month's. The header link is honest
-        # about being a starting point; a sentence promising these items are
-        # there would not be. (A tally is not in the agenda either way: a
-        # Diligent packet is published before the meeting and records no votes.)
+            # The meeting's own agenda, so a reader who wants the detail behind
+            # one of these lines has somewhere to go. Only the URL the caller
+            # supplied for THIS meeting: `_agenda_url`'s fallback is the
+            # district's meetings landing page, which shows the next meeting
+            # rather than this one, and a link that lands somewhere else is
+            # worse here than no link at all.
+            rows = [_action_line(i) for i in actions]
+            if batch:
+                rows.append(f"  - {_consent_summary(batch)}")
+            if where or agenda:
+                head = f"- **{where}**" if where else "-"
+                if agenda:
+                    head += f" ([Full agenda]({agenda}))"
+                lines.append(head + ":")
+                lines += rows
+            else:
+                # A single-meeting recap has no meeting to head the list with —
+                # the whole recap is that meeting — so the items are the list.
+                lines += [row.lstrip() for row in rows]
         lines.append("")
 
     # --- Footer ---

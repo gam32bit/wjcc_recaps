@@ -9,8 +9,11 @@ assembles a post that a human reviews and publishes to Substack.
 agenda item's own title plus its verbatim `BACKGROUND:` text as an attributed
 block quote; public comment is a counted tally of speakers per topic, with a
 timestamp link to each one; vote tallies are counts read off the meeting's roll
-call. A reader who doubts any of it can check it against the source in seconds,
-which is the whole design goal. See [CLAUDE.md](CLAUDE.md) for the reasoning.
+call. The model's only reader-facing words are the few that label a topic —
+"phase in by grade to reduce disruption" over the timestamp of the speaker who
+said it — and a reader who doubts any of it, label included, can check it
+against the source in seconds. That is the whole design goal. See
+[CLAUDE.md](CLAUDE.md) for the reasoning.
 
 ## Running it
 

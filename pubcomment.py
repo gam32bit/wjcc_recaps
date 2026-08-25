@@ -18,6 +18,7 @@ out with a timestamp so a reviewer can seek the video and check the call.
 
 import dataclasses
 import json
+import re
 from dataclasses import dataclass, field
 
 import anthropic
@@ -43,6 +44,12 @@ class Speaker:
     start_seconds: float
     item_number: str = ""   # an agenda item number, or "" when off-agenda
     topic_label: str = ""   # short topic wording; only set when off-agenda
+    # The particular point this speaker made, in the model's own few words —
+    # set for EVERY speaker, on-agenda or not. Six residents can speak to one
+    # agenda item and be asking for six different things, and a count of six
+    # says none of that. Labelling one turn is the same mechanical job as
+    # locating it; the counting and grouping below are plain Python.
+    subtopic: str = ""
     # Numberdate of the meeting this speaker was recorded at. A period recap
     # pools speakers from several meetings into one list, and a bare timestamp
     # is meaningless without knowing which video it indexes into. "" in a
@@ -67,6 +74,16 @@ class TopicCount:
     # itself, and a reader can seek any speaker in five seconds without the
     # newsletter naming or paraphrasing anyone.
     anchors: list[SpeakerAnchor] = field(default_factory=list)
+    # {word: times said} across every counted speaker's turn, most-said first.
+    # See `_count_words`. Empty when tally() was given no transcript, and
+    # absent from files written before this existed. Counted but not currently
+    # rendered — see render.py.
+    words: dict[str, int] = field(default_factory=dict)
+    # This topic's speakers grouped by the point they made, biggest group
+    # first. Each carries its own anchors, so the links still add up to the
+    # count. Empty when no speaker carried a subtopic (every file written
+    # before this existed), and the recap then lists the speakers flat.
+    subtopics: list["TopicCount"] = field(default_factory=list)
 
 
 @dataclass
@@ -94,11 +111,13 @@ _SCHEMA: dict = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["start_seconds", "item_number", "topic_label"],
+                "required": ["start_seconds", "item_number", "topic_label",
+                             "subtopic"],
                 "properties": {
                     "start_seconds": {"type": "number"},
                     "item_number": {"type": "string"},
                     "topic_label": {"type": "string"},
+                    "subtopic": {"type": "string"},
                 },
             },
         },
@@ -118,6 +137,9 @@ Return one entry per member of the PUBLIC who addressed the board:
   the agenda list. Use "" when their topic is not on the agenda.
 - topic_label: leave "" when you set an item_number. When item_number is "", \
   give a short topic in 2-5 words, e.g. "classroom technology use".
+- subtopic: ALWAYS fill this in, for every speaker. The particular point this \
+  speaker made, in 2-6 words, e.g. "phase in by grade" or "keep Oldtown Road \
+  together". Say what they asked for or objected to, not how strongly.
 
 Rules:
 - Count speakers, not turns. A speaker interrupted by the chair, or one who \
@@ -129,6 +151,10 @@ Rules:
   topic, character for character. Prefer the smallest number of distinct \
   labels that covers the comments — these labels are counted, and two spellings \
   of one topic split its count in half.
+- The same goes for subtopic: two speakers asking for the same thing must get \
+  the SAME subtopic, character for character. Prefer the smallest number of \
+  distinct subtopics that covers the comments. A subtopic used by one speaker \
+  is fine when that speaker really is making their own point.
 - Never return a speaker's name, in any field. Names are not wanted.
 - Do not rank, evaluate, or comment on importance. Timestamps and topics only.
 - This is an auto-generated caption track and may be imperfect. Omit a speaker \
@@ -225,6 +251,7 @@ def validate(
             start_seconds=start,
             item_number=number,
             topic_label="" if number else label,
+            subtopic=(entry.get("subtopic") or "").strip(),
         ))
     speakers.sort(key=lambda s: s.start_seconds)
     return speakers
@@ -232,10 +259,137 @@ def validate(
 
 # --- Deterministic tally ---------------------------------------------------
 
+# Words dropped before counting. Maintainer-owned, in the way `rubric.md` is:
+# a person edits this list, and every word in it is either an English function
+# word, caption filler ("um", "you know"), or the procedural furniture of the
+# podium — the chair's "thank you, please state your name and address" lands
+# inside the first seconds of every speaker's span, because an auto-caption
+# track has no speaker labels to cut it out with. Without the last group the
+# top of every list reads "thank (14)".
+#
+# Nothing here is a topic word. Adding one WOULD be a judgment about what the
+# comments were about, which is exactly what this feature exists to avoid — the
+# counts are supposed to show what the speakers said, not what we think they
+# meant.
+_STOPWORDS = set("""
+a an the and or but if then than that this these those there here
+is are was were be been being am it its it's
+i i'm i've me my mine we we're our ours us you you're your yours
+they them their theirs he she his her him hers
+of in on at to for from with without by as about into over under
+through between during before after again further once
+do does did doing done have has had having
+will would can could should shall may might must
+not no nor only own same so too very just also even still yet
+what which who whom whose when where why how
+all any both each few more most other some such
+one two three four five six seven eight nine ten
+let's that's there's here's don't doesn't didn't can't won't wasn't
+isn't aren't we'll we've they're you'll gonna
+um uh yeah yep okay ok like know think going want really
+thing things kind lot got get go say said says come came take took
+make made look looking see put give given ask asked tell told
+because already always never much many well first next last back ago
+thank thanks please good evening night morning afternoon
+name address ms mr mrs dr madam chair chairman sir maam
+""".split())
+
+# A word has to be said at least this many times before the recap will show it.
+# One mention is not "a word they used a lot", and at 1 the list fills with
+# caption garble. Applied when RENDERING, not when counting: the saved tally
+# keeps every word, so the file stays a full audit record and merging two
+# meetings' counts cannot drop a word that was under the bar in each of them
+# and over it across both.
+MIN_WORD_COUNT = 2
+
+_WORD_RE = re.compile(r"[A-Za-z][A-Za-z']*")
+
+
+def _count_words(text: str) -> tuple[dict[str, int], dict[str, str]]:
+    """Count words in a stretch of captions. Returns (counts, display form).
+
+    Counting is case-insensitive; the display form is the spelling that
+    appeared most often, so a proper noun the captions always capitalize comes
+    back as "Lafayette" while a sentence-initial "School" stays lowercase. No
+    stemming: "school" and "schools" are counted apart, because a reader
+    checking a count against the video can only check the word that was said.
+    """
+    counts: dict[str, int] = {}
+    forms: dict[str, dict[str, int]] = {}
+    for word in _WORD_RE.findall(text):
+        key = word.casefold()
+        if len(key) < 3 or key in _STOPWORDS:
+            continue
+        counts[key] = counts.get(key, 0) + 1
+        seen = forms.setdefault(key, {})
+        seen[word] = seen.get(word, 0) + 1
+    # Ties go to the lowercase spelling: a word that is capitalized exactly as
+    # often as not is a sentence start, not a name.
+    display = {
+        key: max(seen, key=lambda w: (seen[w], w[:1].islower()))
+        for key, seen in forms.items()
+    }
+    return counts, display
+
+
+def _span_text(snippets: list[dict], start: float, end: float) -> str:
+    """The caption text between two timestamps."""
+    return " ".join(s["text"] for s in snippets if start <= s["start"] < end)
+
+
+def _merge_words(into: dict[str, int], add: dict[str, int]) -> None:
+    for word, n in add.items():
+        into[word] = into.get(word, 0) + n
+
+
+def _ranked_words(counts: dict[str, int], display: dict[str, str]) -> dict[str, int]:
+    """Counts as an ordered {word: times said}, most-said first, ties A-Z."""
+    return {
+        display.get(key, key): n
+        for key, n in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    }
+
+
+def group_subtopics(speakers: list[Speaker]) -> list[TopicCount]:
+    """Group one topic's speakers by the point each of them made.
+
+    Arithmetic, not judgment: the labels come from the model one speaker at a
+    time (the same measuring-instrument job as placing them in the video), and
+    everything here is counting identical strings. Ranked by size, ties broken
+    by who spoke first, so the order is the meeting's rather than the
+    alphabet's.
+
+    Groups of one are kept. Six residents spoke to the August redistricting
+    item and asked for six different things ("keep Oldtown Road at Lafayette",
+    "phase in by grade to reduce disruption"), and six labelled lines say far
+    more than six bare timestamps. What the recap will not do is print a
+    PARTIAL grouping: one unlabelled speaker and the counts stop adding up, so
+    an empty list falls the whole topic back to the flat list.
+    """
+    groups: dict[str, list[Speaker]] = {}
+    labels: dict[str, str] = {}          # casefolded -> label as first written
+    for sp in speakers:
+        if not sp.subtopic:
+            return []                    # a partial grouping would miscount
+        key = sp.subtopic.casefold()
+        groups.setdefault(key, []).append(sp)
+        labels.setdefault(key, sp.subtopic)
+    return sorted(
+        (TopicCount(
+            label=labels[key],
+            count=len(group),
+            anchors=[SpeakerAnchor(start_seconds=sp.start_seconds,
+                                   meeting=sp.meeting) for sp in group],
+        ) for key, group in groups.items()),
+        key=lambda t: (-t.count, t.anchors[0].start_seconds),
+    )
+
+
 def tally(
     speakers: list[Speaker],
     items: list[AgendaItem],
     pc_ranges: list[dict] | None = None,
+    snippets: list[dict] | None = None,
 ) -> PublicCommentTally:
     """Count speakers per topic and estimate minutes per item. No model.
 
@@ -243,6 +397,12 @@ def tally(
     speaker's (the last speaker runs to the end of the public-comment period),
     which is what `public_comment_minutes` is derived from — the same ranking
     signal as before, attributed per speaker instead of per time range.
+
+    Given `snippets` — the meeting's caption track — each topic also carries a
+    count of the words its speakers used, over exactly those same spans. That
+    is the recap's answer to "what did they say?": arithmetic over the
+    captions, checkable against the video word by word, in place of a quote
+    somebody had to choose.
     """
     result = PublicCommentTally(total_speakers=len(speakers))
     if not speakers:
@@ -261,11 +421,23 @@ def tally(
     off_counts: dict[str, int] = {}
     off_labels: dict[str, str] = {}   # lowercase key -> label as first written
     anchors: dict[str, list[SpeakerAnchor]] = {}
+    words: dict[str, dict[str, int]] = {}    # topic key -> casefolded counts
+    forms: dict[str, str] = {}               # casefolded word -> spelling shown
+    subs: dict[str, list[Speaker]] = {}      # topic key -> its speakers, in order
 
     for n, sp in enumerate(speakers):
         nxt = speakers[n + 1].start_seconds if n + 1 < len(speakers) else period_end
         span = max(0.0, nxt - sp.start_seconds) / 60.0
         anchor = SpeakerAnchor(start_seconds=sp.start_seconds, meeting=sp.meeting)
+        if snippets is not None:
+            said, spelled = _count_words(
+                _span_text(snippets, sp.start_seconds, nxt)
+            )
+            key = sp.item_number or sp.topic_label.casefold()
+            if key:
+                _merge_words(words.setdefault(key, {}), said)
+                forms.update(spelled)
+        subs.setdefault(sp.item_number or sp.topic_label.casefold(), []).append(sp)
         if sp.item_number:
             counts[sp.item_number] = counts.get(sp.item_number, 0) + 1
             minutes[sp.item_number] = minutes.get(sp.item_number, 0.0) + span
@@ -281,12 +453,16 @@ def tally(
     # Ranked by speaker count, ties broken by agenda order (off-agenda: A-Z).
     result.by_item = sorted(
         (TopicCount(label=titles.get(num, num), count=c, item_number=num,
-                    anchors=anchors.get(num, []))
+                    anchors=anchors.get(num, []),
+                    words=_ranked_words(words.get(num, {}), forms),
+                    subtopics=group_subtopics(subs.get(num, [])))
          for num, c in counts.items()),
         key=lambda t: (-t.count, order.get(t.item_number, 999)),
     )
     result.off_agenda = sorted(
-        (TopicCount(label=off_labels[k], count=c, anchors=anchors.get(k, []))
+        (TopicCount(label=off_labels[k], count=c, anchors=anchors.get(k, []),
+                    words=_ranked_words(words.get(k, {}), forms),
+                    subtopics=group_subtopics(subs.get(k, [])))
          for k, c in off_counts.items()),
         key=lambda t: (-t.count, t.label.casefold()),
     )
@@ -395,8 +571,15 @@ def attach_off_agenda(
                 print(f'  attach: "{label}" -> [{best}] {title[:46]} '
                       f'({best_score:.2f})')
         number, _ = resolved[label]
+        # The label that got them promoted is the point they made, so it
+        # becomes their subtopic rather than being dropped — a speaker moved
+        # onto the redistricting item for saying "school redistricting
+        # concerns" is grouped under that, not left unlabelled.
         out.append(
-            dataclasses.replace(sp, item_number=number, topic_label="")
+            dataclasses.replace(
+                sp, item_number=number, topic_label="",
+                subtopic=sp.subtopic or label,
+            )
             if number else sp
         )
     return out
@@ -420,6 +603,11 @@ def merge_tallies(
     off_counts: dict[str, int] = {}
     off_labels: dict[str, str] = {}
     anchors: dict[str, list[SpeakerAnchor]] = {}
+    # Already in display spelling and already ranked within each meeting; summed
+    # here and re-ranked below, so a word said at both meetings carries one
+    # total. Spelling ties across meetings resolve to whichever came first.
+    words: dict[str, dict[str, int]] = {}
+    subs: dict[str, list[TopicCount]] = {}   # topic key -> groups from each meeting
     for t in tallies:
         merged.total_speakers += t.total_speakers
         for num, c in t.speakers_by_item.items():
@@ -430,22 +618,49 @@ def merge_tallies(
             )
         for topic in t.by_item:
             anchors.setdefault(topic.item_number, []).extend(topic.anchors)
+            _merge_words(words.setdefault(topic.item_number, {}), topic.words)
+            subs.setdefault(topic.item_number, []).extend(topic.subtopics)
         for topic in t.off_agenda:
             key = topic.label.casefold()
             off_counts[key] = off_counts.get(key, 0) + topic.count
             off_labels.setdefault(key, topic.label)
             anchors.setdefault(key, []).extend(topic.anchors)
+            _merge_words(words.setdefault(key, {}), topic.words)
+            subs.setdefault(key, []).extend(topic.subtopics)
 
     titles = {i.number: i.title for i in items if i.number}
     order = {i.number: n for n, i in enumerate(items) if i.number}
+    def ranked(key: str) -> dict[str, int]:
+        return _ranked_words(words.get(key, {}), {})
+
+    def regrouped(key: str) -> list[TopicCount]:
+        """One topic's subtopic groups, summed across the meetings it spans."""
+        groups: dict[str, TopicCount] = {}
+        for group in subs.get(key, []):
+            got = groups.get(group.label.casefold())
+            if got is None:
+                groups[group.label.casefold()] = dataclasses.replace(
+                    group, anchors=list(group.anchors)
+                )
+                continue
+            got.count += group.count
+            got.anchors.extend(group.anchors)
+        return sorted(
+            groups.values(),
+            key=lambda t: (-t.count,
+                           t.anchors[0].start_seconds if t.anchors else 0.0),
+        )
+
     merged.by_item = sorted(
         (TopicCount(label=titles.get(num, num), count=c, item_number=num,
-                    anchors=anchors.get(num, []))
+                    anchors=anchors.get(num, []), words=ranked(num),
+                    subtopics=regrouped(num))
          for num, c in merged.speakers_by_item.items()),
         key=lambda t: (-t.count, order.get(t.item_number, 999)),
     )
     merged.off_agenda = sorted(
-        (TopicCount(label=off_labels[k], count=c, anchors=anchors.get(k, []))
+        (TopicCount(label=off_labels[k], count=c, anchors=anchors.get(k, []),
+                    words=ranked(k), subtopics=regrouped(k))
          for k, c in off_counts.items()),
         key=lambda t: (-t.count, t.label.casefold()),
     )
@@ -484,6 +699,7 @@ def _topic_from_dict(raw: dict) -> TopicCount:
     re-render exactly as they did."""
     data = dict(raw)
     data["anchors"] = [SpeakerAnchor(**a) for a in data.get("anchors") or []]
+    data["subtopics"] = [_topic_from_dict(t) for t in data.get("subtopics") or []]
     return TopicCount(**data)
 
 
