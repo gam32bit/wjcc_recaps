@@ -78,7 +78,17 @@ for src in sorted(sources, key=lambda s: s.numberdate):
     if not path.is_file() or not src.video:
         continue
     per = json.loads(path.read_text())
-    pc_ranges = per["public_comment_period"]
+    # Same reclaim run_period does. Without it a rerender reproduces whatever
+    # window was saved BEFORE extend_to_next_item landed — on Aug 18 that
+    # window closes two seconds before the eleventh speaker starts, and the
+    # recap goes out claiming ten. The count is the product here; a stale
+    # window silently undercounts it.
+    pc_ranges = pubcomment.extend_to_next_item(
+        per["public_comment_period"],
+        [getattr(sc.signals,
+                 "work_session_start_seconds" if src.kind == "work_session"
+                 else "meeting_start_seconds") for sc in scored],
+    )
     all_ranges += pc_ranges
     snippets = mn.fetch_transcript(src.video, cache_dir=mn.CACHE_DIR)
     text = pubcomment.compact_slice(snippets, pc_ranges)
@@ -89,6 +99,11 @@ for src in sorted(sources, key=lambda s: s.numberdate):
     all_speakers += mine
     tallies.append(pubcomment.tally(mine, all_items, pc_ranges, snippets))
     path.write_text(pubcomment.to_json(mine, tallies[-1], pc_ranges))
+    review = pubcomment.write_review_md(
+        src.numberdate, mine, all_items, snippets, pc_ranges,
+        title=f"Public comment — {src.label}", video_url=src.video,
+    )
+    print(f"wrote {review}")
 pc_tally = pubcomment.merge_tallies(tallies, all_items)
 pubcomment.apply_to_signals(scored, pc_tally)
 pathlib.Path(f"out/recap-pubcomment-{PERIOD}.json").write_text(
@@ -96,7 +111,7 @@ pathlib.Path(f"out/recap-pubcomment-{PERIOD}.json").write_text(
 
 item_slices, attachment_slices = mn._packet_paths(
     sorted(sources, key=lambda s: s.numberdate))
-quotes, speaker_quotes, vote_notes = mn._load_quotes(PERIOD)
+quotes, speaker_quotes, vote_notes, watch_starts = mn._load_quotes(PERIOD)
 
 top = [s for s in scored if s.item.number in HIGHLIGHTS]
 body = render_recap(
@@ -109,6 +124,7 @@ body = render_recap(
     period_meetings=meta["period_meetings"],
     packet_paths=item_slices, attachment_paths=attachment_slices,
     quotes=quotes, speaker_quotes=speaker_quotes, vote_notes=vote_notes,
+    watch_starts=watch_starts,
 )
 out = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "recap-new.md")
 out.write_text(body)

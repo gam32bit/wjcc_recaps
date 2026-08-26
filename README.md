@@ -7,12 +7,13 @@ assembles a post that a human reviews and publishes to Substack.
 
 **Nothing in the recap is written by a language model.** Each highlight is the
 agenda item's own title plus its verbatim `BACKGROUND:` text as an attributed
-block quote; public comment is a counted tally of speakers per topic, with a
-timestamp link to each one; vote tallies are counts read off the meeting's roll
-call. The model's only reader-facing words are the few that label a topic —
-"phase in by grade to reduce disruption" over the timestamp of the speaker who
-said it — and a reader who doubts any of it, label included, can check it
-against the source in seconds. That is the whole design goal. See
+block quote; public comment is a counted tally of speakers, each one a bare
+timestamp link into the video; vote tallies are counts read off the meeting's
+roll call. No line claims how long anything took. The model's only
+reader-facing words are the few that name an off-agenda topic somebody raised
+— "special education inclusion" over the timestamps of the people who raised
+it — and a reader who doubts any of it, label included, can check it against
+the source in seconds. That is the whole design goal. See
 [CLAUDE.md](CLAUDE.md) for the reasoning.
 
 ## Running it
@@ -32,6 +33,11 @@ python make_newsletter.py --period 202608 --dry-run
 
 Output lands in `out/` (gitignored). Agenda fixtures live in `wjcc-fixtures/`;
 fetched transcripts, packet PDFs, and Claude's answers are cached in `.cache/`.
+
+Before publishing, read `out/pubcomment-review-<date>.md`. It prints every
+public-comment speaker's label above the verbatim captions it was assigned
+from, over exactly the span the tally counts — the check on both the model's
+topic labels and the speaker count, which is the recap's central claim.
 
 Every Claude call is cached by a hash of the whole request, so re-running a
 recap on unchanged inputs makes no API calls and costs nothing. Editing a

@@ -18,6 +18,7 @@ out with a timestamp so a reviewer can seek the video and check the call.
 
 import dataclasses
 import json
+import pathlib
 import re
 from dataclasses import dataclass, field
 
@@ -26,7 +27,9 @@ import anthropic
 import llmcache
 
 from parse import AgendaItem
+from merge import display_number
 from score import compact_transcript
+from transcript import _hms, clean_caption_text
 from titlematch import _LEAD_VERB_RE, _TITLE_MATCH_MIN, _content_words, _overlap
 
 MODEL = "claude-sonnet-5"
@@ -385,6 +388,32 @@ def group_subtopics(speakers: list[Speaker]) -> list[TopicCount]:
     )
 
 
+def speaker_spans(
+    speakers: list[Speaker], pc_ranges: list[dict] | None = None
+) -> list[tuple[float, float]]:
+    """Each speaker's (start, end), as [start, next speaker's start).
+
+    The last speaker runs to the end of the public-comment period. One
+    definition, used both by `tally` — which turns these into the minutes that
+    rank an item — and by `review_markdown`, so the text a reviewer reads under
+    a subtopic label is exactly the text that label was assigned from. If the
+    two ever drifted apart, the review artifact would quietly stop reviewing
+    anything.
+    """
+    if not speakers:
+        return []
+    period_end = (
+        max(r["end_seconds"] for r in pc_ranges)
+        if pc_ranges
+        else speakers[-1].start_seconds
+    )
+    return [
+        (sp.start_seconds,
+         speakers[n + 1].start_seconds if n + 1 < len(speakers) else period_end)
+        for n, sp in enumerate(speakers)
+    ]
+
+
 def tally(
     speakers: list[Speaker],
     items: list[AgendaItem],
@@ -408,11 +437,7 @@ def tally(
     if not speakers:
         return result
 
-    period_end = (
-        max(r["end_seconds"] for r in pc_ranges)
-        if pc_ranges
-        else speakers[-1].start_seconds
-    )
+    spans = speaker_spans(speakers, pc_ranges)
     titles = {i.number: i.title for i in items if i.number}
     order = {i.number: n for n, i in enumerate(items) if i.number}
 
@@ -425,8 +450,7 @@ def tally(
     forms: dict[str, str] = {}               # casefolded word -> spelling shown
     subs: dict[str, list[Speaker]] = {}      # topic key -> its speakers, in order
 
-    for n, sp in enumerate(speakers):
-        nxt = speakers[n + 1].start_seconds if n + 1 < len(speakers) else period_end
+    for sp, (_, nxt) in zip(speakers, spans):
         span = max(0.0, nxt - sp.start_seconds) / 60.0
         anchor = SpeakerAnchor(start_seconds=sp.start_seconds, meeting=sp.meeting)
         if snippets is not None:
@@ -733,3 +757,78 @@ def speaker_anchors(speakers: list[Speaker], items: list[AgendaItem]) -> list[tu
             topic = sp.topic_label or "topic unclear"
         anchors.append((sp.start_seconds, f"Speaker {n}: {topic}"))
     return anchors
+
+
+def review_markdown(
+    speakers: list[Speaker],
+    items: list[AgendaItem],
+    snippets: list[dict],
+    pc_ranges: list[dict] | None = None,
+    *,
+    title: str = "Public comment",
+    video_url: str | None = None,
+) -> str:
+    """The maintainer's check on the model's labels: label beside its evidence.
+
+    The subtopic wording under a highlight is the one place a model's words
+    reach the page, and it is checkable only against the speaker's own turn.
+    This prints them together — the label the model returned, the timestamp it
+    placed the speaker at, and the verbatim captions for exactly the span
+    `tally` counted that speaker over — so a reviewer reads down one file
+    instead of scrubbing the video for six start times.
+
+    Deterministic and free: it re-reads the same `Speaker` objects and the same
+    cached caption track. Nothing here goes near the classifier's prompt, which
+    is why it can be regenerated at will — see the drift note in
+    `quotes-<period>.json`.
+    """
+    titles = {i.number: i.title for i in items if i.number}
+    lines = [f"# {title}", ""]
+    n = len(speakers)
+    lines += [f"{n} speaker{'s' if n != 1 else ''}. Each heading is where the "
+              "classifier placed the speaker; the text under it is the "
+              "captions from that timestamp to the next speaker's — the same "
+              "span the tally counts. Check the bolded label against it.", ""]
+    for n, (sp, (start, end)) in enumerate(
+        zip(speakers, speaker_spans(speakers, pc_ranges)), 1
+    ):
+        stamp = _hms(start)
+        if video_url:
+            stamp = f"[{stamp}]({video_url}&t={int(start)}s)"
+        if sp.item_number:
+            topic = f"Item {display_number(sp.item_number)} — " \
+                    f"{titles.get(sp.item_number, '')}".rstrip(" —")
+        else:
+            topic = sp.topic_label or "off agenda, topic unclear"
+        lines += [f"## Speaker {n} — {stamp}", ""]
+        lines += [f"- **Asked for (label):** {sp.subtopic or '(none returned)'}"]
+        lines += [f"- **Counted under:** {topic}", ""]
+        text = clean_caption_text(_span_text(snippets, start, end))
+        lines += [text.strip() or "*(no captions in this span)*", ""]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def write_review_md(
+    numberdate: str,
+    speakers: list[Speaker],
+    items: list[AgendaItem],
+    snippets: list[dict],
+    pc_ranges: list[dict] | None = None,
+    *,
+    out_dir: pathlib.Path | None = None,
+    title: str = "Public comment",
+    video_url: str | None = None,
+) -> pathlib.Path:
+    """Save `review_markdown` next to the recap, as pubcomment-review-<date>.md.
+
+    NOT named `recap-pubcomment-<date>.json`-alike on purpose: carryforward.py
+    globs `recap-pubcomment-<8 digits>.json` for the prior-turnout signal, and
+    a review file that fell into that glob would be read as a tally.
+    """
+    out_dir = out_dir or (pathlib.Path(__file__).resolve().parent / "out")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"pubcomment-review-{numberdate}.md"
+    path.write_text(review_markdown(
+        speakers, items, snippets, pc_ranges, title=title, video_url=video_url
+    ))
+    return path

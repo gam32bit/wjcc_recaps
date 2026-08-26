@@ -1,99 +1,124 @@
 {
-  "_README": [
-    "Quotes chosen BY A HUMAN from the meeting videos. This file is",
-    "maintainer-owned in exactly the way rubric.md is: nothing here is picked,",
-    "written, or ranked by a model, and render.py only lays out what it finds.",
-    "",
-    "'items' holds one quote per agenda item, keyed by the namespaced item",
-    "number merge.py produces. 'speakers' holds a short excerpt for one",
-    "public-comment speaker, keyed by meeting numberdate and then by the",
-    "speaker's start_seconds in out/recap-pubcomment-<period>.json — the same",
-    "anchor the timestamp link uses, so an excerpt can never drift onto the",
-    "wrong speaker. Keep speaker excerpts under ten words: they sit on the same",
-    "line as the timestamp, and the point is to say what the person ASKED THE",
-    "BOARD TO DO, not to summarize their two minutes.",
-    "",
-    "All text is the meeting's AUTOMATIC CAPTIONS, which are an ASR guess and",
-    "not a certified transcript — which is why everything renders with its",
-    "timestamp link and says where it came from. The reader verifies it by",
-    "listening. Use an ellipsis for anything elided and square brackets for a",
-    "corrected caption mangling (a speaker excerpt records its own fix in",
-    "this README rather than a 'note' field); note any other departure, so the",
-    "edit is on the record rather than invisible.",
-    "",
-    "'speaker' is only ever filled in when the video itself establishes who is",
-    "talking — a self-identification, or the chair or another member naming",
-    "them on the record. A caption SPELLING is not evidence (see CLAUDE.md:",
-    "Chen comes through as Chem, Chan and 'Jen Charlton'). Leave it out rather",
-    "than guess. Public-comment speakers are never named at all: the recap",
-    "counts them and links them, and that is the whole of it.",
-    "",
-    "PENDING: the 2069 speaker excerpt is the ELEVENTH speaker (34:29), who is",
-    "missing from out/recap-pubcomment-202608.json — that file was written",
-    "before pubcomment.extend_to_next_item landed, so its window closes at",
-    "2067s, two seconds before he starts. That is the exact failure the",
-    "function was written for. Re-running the period picks him up and the",
-    "count becomes 11, not 10. Check that 2069 matches the anchor the run",
-    "actually produces; a key that misses simply renders no excerpt.",
-    "",
-    "FIXES in speaker excerpts: 790 has [rezoned] for the captions' 'reszoned'.",
-    "Speaker 3 (1056) is deliberately excerpt-less — nothing he said stands up",
-    "as a short quote, and a blank there is honest; the timestamp still works.",
-    "",
-    "The keys here are ANCHORS, and re-running classify_speakers moves them a",
-    "few seconds when its prompt changes. The August 2026 keys were re-mapped",
-    "once, on 2026-08-25, when the subtopic field was added: each moved 1-13s,",
-    "in order, one-to-one. One excerpt was dropped in that pass — 2069, 'put a",
-    "[three-letter] identifier ahead of the message' — because no speaker is",
-    "placed there any more. Re-key it by hand if that speaker is real.",
-    "",
-    "'votes' names the members a roll call recorded as ABSENT or ABSTAINING,",
-    "keyed by the same namespaced item number. This is the one place a member's",
-    "name reaches the page, and it is here — in the human's file — because the",
-    "captions cannot support it: votes.py reads the roll call off an ASR track",
-    "that spells Cavazos as Kvassos, Kabaso and Vasquez. A name goes in only",
-    "after a person has checked the caption roll call against the board's real",
-    "roster and written down how they did it in 'note'. Leave the block out and",
-    "the tally prints '(1 absent)', which is always true."
-  ],
-
-  "items": {
-    "0804-6.01": {
-      "text": "What I have heard from community members … is really just around the unknowns with the transition plan. … I can get behind any kind of boundary line, but I need to know what the plan is.",
-      "speaker": "Ms. Chen, school board member",
-      "meeting": "20260804",
-      "start_seconds": 3893,
-      "note": "Two spans: the first from 1:04:53 (the anchor), the second from 1:06:27. The first ellipsis drops the captions' 'and concerns', which garbles the sentence. Speaker established in the video, not from a caption spelling: she introduces herself at 1:02:48 ('This is Jen') and a fellow member answers 'to Ms. Chen's point' at 1:09:27."
-    },
-    "0804-8.07": {
-      "text": "I'm happy to see our teachers and staff are continuing to get a little bigger piece of the pie when it comes to compensation with this extra money. I'm thrilled to see the … hour day change for our related services positions in there.",
-      "speaker": "Mr. Hodges, school board member",
-      "meeting": "20260804",
-      "start_seconds": 858,
-      "note": "One span from 14:18 through 14:49; the ellipsis drops a repeated 'the the'. Speaker established in the video: the chair says 'Yes, Mr. Hodges' immediately before he begins. Replaces an earlier pick — the CFO's summary of the three-way split of the money — which read as a staff briefing rather than as the board's own take."
-    }
+ "_README": [
+  "Quotes chosen BY A HUMAN from the meeting videos. This file is",
+  "maintainer-owned in exactly the way rubric.md is: nothing here is picked,",
+  "written, or ranked by a model, and render.py only lays out what it finds.",
+  "",
+  "'items' holds one quote per agenda item, keyed by the namespaced item",
+  "number merge.py produces. 'speakers' holds a short excerpt for one",
+  "public-comment speaker, keyed by meeting numberdate and then by the",
+  "speaker's start_seconds in out/recap-pubcomment-<period>.json — the same",
+  "anchor the timestamp link uses, so an excerpt can never drift onto the",
+  "wrong speaker. Keep speaker excerpts under ten words: they sit on the same",
+  "line as the timestamp, and the point is to say what the person ASKED THE",
+  "BOARD TO DO, not to summarize their two minutes.",
+  "",
+  "All text is the meeting's AUTOMATIC CAPTIONS, which are an ASR guess and",
+  "not a certified transcript — which is why everything renders with its",
+  "timestamp link and says where it came from. The reader verifies it by",
+  "listening. Use an ellipsis for anything elided and square brackets for a",
+  "corrected caption mangling (a speaker excerpt records its own fix in",
+  "this README rather than a 'note' field); note any other departure, so the",
+  "edit is on the record rather than invisible.",
+  "",
+  "'speaker' is only ever filled in when the video itself establishes who is",
+  "talking — a self-identification, or the chair or another member naming",
+  "them on the record. A caption SPELLING is not evidence (see CLAUDE.md:",
+  "Chen comes through as Chem, Chan and 'Jen Charlton'). Leave it out rather",
+  "than guess. Public-comment speakers are never named at all: the recap",
+  "counts them and links them, and that is the whole of it.",
+  "",
+  "RESOLVED (was PENDING): the eleventh speaker (34:25) is now counted.",
+  "scripts/rerender_period.py had been reading the saved",
+  "public_comment_period without pubcomment.extend_to_next_item, so every",
+  "rerender reproduced a window closing at 2067s — two seconds before he",
+  "starts — and the draft said ten. The script now mirrors run_period and",
+  "the count is 11. His anchor came out at 2065, not the 2069 predicted",
+  "here; the speaker excerpts keyed to the old anchors are stale, and",
+  "harmless, because render.py no longer renders speaker excerpts at all.",
+  "",
+  "FIXES in speaker excerpts: 790 has [rezoned] for the captions' 'reszoned'.",
+  "Speaker 3 (1056) is deliberately excerpt-less — nothing he said stands up",
+  "as a short quote, and a blank there is honest; the timestamp still works.",
+  "",
+  "The keys here are ANCHORS, and re-running classify_speakers moves them a",
+  "few seconds when its prompt changes. The August 2026 keys were re-mapped",
+  "once, on 2026-08-25, when the subtopic field was added: each moved 1-13s,",
+  "in order, one-to-one. One excerpt was dropped in that pass — 2069, 'put a",
+  "[three-letter] identifier ahead of the message' — because no speaker is",
+  "placed there any more. Re-key it by hand if that speaker is real.",
+  "",
+  "'votes' names the members a roll call recorded as ABSENT or ABSTAINING,",
+  "keyed by the same namespaced item number. This is the one place a member's",
+  "name reaches the page, and it is here — in the human's file — because the",
+  "captions cannot support it: votes.py reads the roll call off an ASR track",
+  "that spells Cavazos as Kvassos, Kabaso and Vasquez. A name goes in only",
+  "after a person has checked the caption roll call against the board's real",
+  "roster and written down how they did it in 'note'. Leave the block out and",
+  "the tally prints '(1 absent)', which is always true."
+ ],
+ "items": {
+  "0804-6.01": {
+   "text": "What I have heard from community members … is really just around the unknowns with the transition plan. … I can get behind any kind of boundary line, but I need to know what the plan is.",
+   "speaker": "Ms. Chen, school board member",
+   "meeting": "20260804",
+   "start_seconds": 3893,
+   "note": "Two spans: the first from 1:04:53 (the anchor), the second from 1:06:27. The first ellipsis drops the captions' 'and concerns', which garbles the sentence. Speaker established in the video, not from a caption spelling: she introduces herself at 1:02:48 ('This is Jen') and a fellow member answers 'to Ms. Chen's point' at 1:09:27."
   },
-
-  "speakers": {
-    "20260818": {
-      "790":  "everything along Oldtown Road to be [rezoned] for Lafayette",
-      "941":  "I respectfully request transparency in this new process.",
-      "1188": "Please revisit the June survey results",
-      "1329": "What should unite our children?",
-      "1459": "Let's celebrate unity, not diversity.",
-      "1601": "start with the incoming freshman class",
-      "1745": "they seem to lack representation here",
-      "1830": "encourage the school board to revisit the matter",
-      "1922": "would it be that hard to reopen the conversation?"
-    }
-  },
-
-  "votes": {
-    "0804-8.07": {
-      "absent": [
-        "Michael Hosang"
-      ],
-      "note": "By elimination against the board's own roster, which the district publishes in its BoardDocs vote records (see the 'Aye:' lines in wjcc-fixtures/agenda-2026*.html): Cavazos, Chen, Donnor, Hodges, Hosang, Hundley, Riffle. Six answered this roll call — Riffle, Cavazos ('Dr. Kavas'/'Ms. Vasquez'), Chen, Hodges, Hundley ('Mrs. Hunley') and Donnor — and Hosang is the member left over. Cross-checks: he is called first at every Aug 4 roll call with no answer (the captions render that call as 'Miss Auler'/'Ms. Oller'), and he votes at every Aug 18 roll call, where Donnor is the one missing. CONFIRM AGAINST THE VIDEO BEFORE PUBLISHING — this is an inference from a caption track, not a minute book."
-    }
+  "0804-8.07": {
+   "text": "I'm happy to see our teachers and staff are continuing to get a little bigger piece of the pie when it comes to compensation with this extra money. I'm thrilled to see the … hour day change for our related services positions in there.",
+   "speaker": "Mr. Hodges, school board member",
+   "meeting": "20260804",
+   "start_seconds": 858,
+   "note": "One span from 14:18 through 14:49; the ellipsis drops a repeated 'the the'. Speaker established in the video: the chair says 'Yes, Mr. Hodges' immediately before he begins. Replaces an earlier pick — the CFO's summary of the three-way split of the money — which read as a staff briefing rather than as the board's own take."
   }
+ },
+ "speakers": {
+  "20260818": {
+   "790": "everything along Oldtown Road to be [rezoned] for Lafayette",
+   "941": "I respectfully request transparency in this new process.",
+   "1188": "Please revisit the June survey results",
+   "1329": "What should unite our children?",
+   "1459": "Let's celebrate unity, not diversity.",
+   "1601": "start with the incoming freshman class",
+   "1745": "they seem to lack representation here",
+   "1830": "encourage the school board to revisit the matter",
+   "1922": "would it be that hard to reopen the conversation?"
+  }
+ },
+ "votes": {
+  "0804-8.07": {
+   "absent": [
+    "Michael Hosang"
+   ],
+   "note": "By elimination against the board's own roster, which the district publishes in its BoardDocs vote records (see the 'Aye:' lines in wjcc-fixtures/agenda-2026*.html): Cavazos, Chen, Donnor, Hodges, Hosang, Hundley, Riffle. Six answered this roll call — Riffle, Cavazos ('Dr. Kavas'/'Ms. Vasquez'), Chen, Hodges, Hundley ('Mrs. Hunley') and Donnor — and Hosang is the member left over. Cross-checks: he is called first at every Aug 4 roll call with no answer (the captions render that call as 'Miss Auler'/'Ms. Oller'), and he votes at every Aug 18 roll call, where Donnor is the one missing. CONFIRM AGAINST THE VIDEO BEFORE PUBLISHING — this is an inference from a caption track, not a minute book."
+  }
+ },
+ "watch": {
+  "_README": [
+   "Where an agenda item actually STARTS in a meeting's recording, when",
+   "the segmenter got it wrong. Keyed by the namespaced item number, then",
+   "by meeting numberdate; the value is 'MM:SS', 'H:MM:SS' or bare",
+   "seconds. render._watch_line uses it for that meeting's link and falls",
+   "back to the segmenter's own anchor when there is no entry.",
+   "",
+   "This is a DISPLAY override, not a re-measurement: the minutes that",
+   "rank items still come from segmentation and are unaffected. Nothing",
+   "on the page claims a duration any more, so an override moves one",
+   "link and nothing else.",
+   "",
+   "Both entries below were read off the video by a person. 6.01's saved",
+   "anchor was 28:11, which lands in the tail of the previous item.",
+   "8.07's was 1:22:18 — the VOTE. The board took the item up at 7:20 as",
+   "5.01 and voted it the same evening as 8.07, and the segmenter is",
+   "asked for where the board discussed or voted, so the staff",
+   "presentation between the two was never captured (see CLAUDE.md)."
+  ],
+  "0804-6.01": {
+   "20260804": "28:37"
+  },
+  "0804-8.07": {
+   "20260804": "7:20"
+  }
+ }
 }

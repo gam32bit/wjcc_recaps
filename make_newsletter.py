@@ -488,27 +488,35 @@ def _packet_paths(
 
 def _load_quotes(
     period: str,
-) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict]]:
+) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict], dict[str, dict]]:
     """Maintainer-chosen quotes for this period, from `quotes-<period>.json`.
 
     Returns (one quote per agenda item, one excerpt per public-comment
     speaker, one roll-call note per item — who was absent or abstaining, named
-    by a person because the captions cannot name them; see `render._who`). Human-owned in the way `rubric.md` is: a person watches the
+    by a person because the captions cannot name them; see `render._who` —
+    and one watch-start override per item per meeting, for when the segmenter
+    anchored the item on the wrong moment; see `render._watch_line`).
+    Human-owned in the way `rubric.md` is: a person watches the
     meeting, picks the line, and records where it came from. Nothing in the
     pipeline writes this file, and a period without one renders no quotes.
     """
     path = PROJECT_DIR / f"quotes-{period}.json"
     if not path.is_file():
         print(f"  No {path.name} — rendering without quotes.")
-        return {}, {}, {}
+        return {}, {}, {}, {}
     data = json.loads(path.read_text())
     items = data.get("items", {})
     speakers = data.get("speakers", {})
     vote_notes = data.get("votes", {})
+    # The file's own README lives under a "_"-prefixed key in each block, so
+    # it travels with the thing it documents. Never an item number.
+    watch_starts = {k: v for k, v in data.get("watch", {}).items()
+                    if not k.startswith("_")}
     n_speakers = sum(len(v) for v in speakers.values())
-    print(f"  {len(items)} item quote(s), {n_speakers} speaker excerpt(s) and "
-          f"{len(vote_notes)} roll-call note(s) from {path.name}.")
-    return items, speakers, vote_notes
+    print(f"  {len(items)} item quote(s), {n_speakers} speaker excerpt(s), "
+          f"{len(vote_notes)} roll-call note(s) and {len(watch_starts)} watch "
+          f"override(s) from {path.name}.")
+    return items, speakers, vote_notes, watch_starts
 
 
 def run_period(
@@ -627,6 +635,17 @@ def run_period(
             (OUT_DIR / f"recap-pubcomment-{source.numberdate}.json").write_text(
                 pubcomment.to_json(speakers, meeting_tally, pc_ranges)
             )
+            # The reviewer's copy: every speaker's label printed beside the
+            # captions it was assigned from. The subtopic labels are the one
+            # place the model's words reach the recap, so they get checked
+            # against the source before the draft goes out — see CLAUDE.md.
+            review = pubcomment.write_review_md(
+                source.numberdate, speakers, all_items, snippets, pc_ranges,
+                out_dir=OUT_DIR, title=f"Public comment — {source.label}",
+                video_url=source.video,
+            )
+            print(f"  Wrote {review.relative_to(PROJECT_DIR)} "
+                  "— check the subtopic labels against the captions.")
         write_transcript_md(
             source.numberdate,
             "worksession" if source.kind == "work_session" else "meeting",
@@ -692,7 +711,7 @@ def run_period(
     # --- Step 5: render + save ---
     ordered = sorted(sources, key=lambda s: s.numberdate)
     item_slices, attachment_slices = _packet_paths(ordered)
-    quotes, speaker_quotes, vote_notes = _load_quotes(period)
+    quotes, speaker_quotes, vote_notes, watch_starts = _load_quotes(period)
     body = render_recap(
         result.logistics,
         top_items,
@@ -712,6 +731,7 @@ def run_period(
         quotes=quotes,
         speaker_quotes=speaker_quotes,
         vote_notes=vote_notes,
+        watch_starts=watch_starts,
     )
 
     score_path = OUT_DIR / f"recap-score-{period}.json"

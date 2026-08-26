@@ -32,11 +32,14 @@ have to be honest and defensible to readers, not "our AI thinks these matter."
      district's own page in the packet — see `pdfslice.py`);
   2. counted tallies — public-comment speakers, vote counts — each speaker
      linked to their turn in the video, so the number of links IS the count.
-     Under a highlight the speakers are grouped by what each of them asked the
-     board for; the labels are the model's, in the same narrow role it plays
-     for off-agenda topics (one turn in, a few words out, checkable against
-     the timestamp beside it), and the grouping and counting under them are
-     plain Python — see `pubcomment.group_subtopics`. Members' names appear in
+     Under a highlight the speakers are a flat list of timestamps and nothing
+     else: `pubcomment.group_subtopics` still labels and groups them into the
+     tally JSON, but the recap stopped printing those labels, because a
+     few-word description of two minutes of speech can only be checked by
+     listening to the two minutes — which is what the timestamp beside it
+     already offers. The model's words now reach the page in exactly one
+     place, the off-agenda topic labels in "More Public Comment", and those
+     get reviewed the same way (see below). Members' names appear in
      one place only, a roll call's absentees, and only when a person has
      written the name into `quotes-<period>.json` after checking the captions
      against the board's published roster;
@@ -81,6 +84,25 @@ an LLM judgment call? Prefer the signal.
 - Fixtures in `wjcc-fixtures/`; generated output in `out/`; fetched
   PDFs/transcripts cached in `.cache/` (`out/`, `.cache/`, `.env` all
   gitignored).
+- **Check the public-comment labels before publishing.** Every run writes
+  `out/pubcomment-review-<numberdate>.md` — each speaker's label printed above
+  the captions it was assigned from, over exactly the span the tally counts
+  (`pubcomment.review_markdown`). The per-speaker subtopic labels no longer
+  render, but the off-agenda TOPIC labels above them do, and this file is
+  where both get checked — along with the count itself, which is the recap's
+  central claim. Reading down it is a required review step, not an optional
+  one. It is deterministic and free to regenerate; nothing in it touches the
+  classifier's prompt.
+- **No line in the recap claims a duration.** Highlights used to open with
+  "Discussed 6 min at the regular meeting"; they now open with the
+  maintainer's quote, then `render._watch_line`'s "Watch this agenda item"
+  links. The measured minutes still rank items — they are just not a claim on
+  the page, because `score._SEGMENTATION_SYSTEM` asks for where the BOARD
+  discussed or voted on an item, so a staff presentation counts as zero. The
+  August budget item measured 0.5 minutes: the vote, with its 7:20
+  presentation unmeasured. Anchors are wrong often enough that a person can
+  override the watch link per item per meeting in `quotes-<period>.json`'s
+  `watch` block.
 - **Every Claude call is cached to `.cache/llm/`** by `llmcache.py`, keyed by a
   hash of the whole request (model, prompt, schema, transcript), so re-running
   the pipeline on unchanged inputs costs nothing. Edit a prompt or bump the
@@ -110,7 +132,9 @@ Timestamps there are deep links into the video when the writer was given a
   board voted it that night as 8.07. Walk the transcript's `##` headings too.
 - **Segmenter anchors run early; verify boundaries against the text.** 6.01's
   saved `work_session_start_seconds` was 1691 (28:11), but the item opens at
-  28:42 and the paragraph under its heading still belongs to 5.10. Corollary:
+  28:37 (the maintainer's own reading off the video, recorded in
+  `quotes-202608.json`'s `watch` block; an earlier pass here read it as 28:42)
+  and the paragraph under its heading still belongs to 5.10. Corollary:
   don't rank items within the 0.5–2.6 min band against each other — a
   30-second boundary error is 100% of a one-minute item. "Only redistricting
   got real time" is robust; the ordering beneath it is not.

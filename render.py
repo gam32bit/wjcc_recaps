@@ -5,12 +5,12 @@ Deterministic, no LLM, no network. Lays out parsed agenda data, the signal data
 from score.py, and the public-comment tally from pubcomment.py.
 
 The recap contains no model-written prose at all. A highlight carries the
-maintainer's chosen quote from the meeting video (quotes-<period>.json), the
-signals that ranked the item, the agenda item's own title and verbatim
-BACKGROUND text as an attributed block quote, the documents filed with it by
-name, the parsed vote tally, and the counted public-comment speakers, grouped
-by what each of them asked the board for. The preview product still uses
-write.py's drafted prose.
+maintainer's chosen quote from the meeting video (quotes-<period>.json), a
+link to where the item comes up in each recording, the agenda item's own title
+and verbatim BACKGROUND text as an attributed block quote, the documents filed
+with it by name, the parsed vote tally, and the counted public-comment
+speakers as bare timestamps. No line claims how long anything took. The
+preview product still uses write.py's drafted prose.
 
 Meeting logistics come straight from the (never-sent-to-Claude) Logistics
 record, so date, times, locations, and the livestream URL are always exact.
@@ -301,6 +301,18 @@ _PARTICIPATION_NOTE = (
 )
 
 
+# The district's own page for the board, which lists every member with their
+# contact address. Deliberately the roster page and not a mailbox: the board
+# has seven members, no single address reaches them as a body, and this recap
+# does not name members outside a roll call's absentees. The sentence promises
+# a page of contacts because that is what the link opens.
+_CONTACT_NOTE = (
+    "**Contact the board:** every member's email address is listed on the "
+    "district's [School Board page]"
+    "(https://wjccschools.org/about-wjcc/leadership/school-board/)."
+)
+
+
 # Words the packet Title-Cases because the rule is an agenda item TITLE, not a
 # sentence. Lowercased so the note reads as prose. Only common nouns are listed:
 # "School Board" is a proper name and keeps its capitals.
@@ -323,10 +335,22 @@ def _participation_note(logistics: Logistics) -> str:
     return f"{_PARTICIPATION_NOTE} {rule[:1].upper() + rule[1:]}."
 
 
-def _schedule_line(entry) -> str:
-    """One footer bullet for an upcoming meeting/event (comma-separated facts)."""
-    detail = ", ".join(p for p in (entry.date, entry.time, entry.location) if p)
-    return f"**{entry.name}**" + (f", {detail}" if detail else "")
+def _schedule_lines(entry) -> list[str]:
+    """Footer bullets for one upcoming meeting/event: name, then its facts.
+
+    Date, time and location on their own labelled sub-bullets rather than run
+    together after the name. The board's own time strings are a sentence long
+    ("Call to Order & Closed Session at 4:00 p.m.; Open Session at 4:30 p.m.")
+    and a comma-joined line buried the location behind them. A fact the packet
+    did not give us gets no bullet — an empty "When:" would read as a missing
+    meeting rather than a missing field.
+    """
+    rows = [f"- **{entry.name}**"]
+    for label, value in (("Date", entry.date), ("Time", entry.time),
+                         ("Location", entry.location)):
+        if value:
+            rows.append(f"  - **{label}:** {value}")
+    return rows
 
 
 # --- Recap: verbatim agenda text -------------------------------------------
@@ -510,69 +534,97 @@ def _cost_line(item: AgendaItem) -> str | None:
     return f"**Cost budgeted:** {cost}"
 
 
-def _round_minutes(minutes: float) -> str:
-    """A discussion length as whole minutes, e.g. '6 min'.
+def _watch_seconds(value) -> float | None:
+    """A maintainer's watch override as seconds: 1717, "28:37" or "1:04:53"."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parts = [int(p) for p in value.strip().split(":")]
+    except ValueError:
+        return None
+    seconds = 0.0
+    for part in parts:
+        seconds = seconds * 60 + part
+    return seconds
 
-    Rounded half up rather than with `round()`, which rounds halves to even —
-    2.5 min would print as "2 min" and 1.5 as "2". Anything that rounds to zero
-    prints as "under 1 min" instead: the item was discussed (the clause is only
-    built when the minutes are above zero), and "Discussed 0 min" says the
-    opposite of what the measurement found.
-    """
-    whole = int(minutes + 0.5)
-    return "under 1 min" if whole < 1 else f"{whole} min"
 
-
-def _signal_line(
+def _watch_line(
     s: ScoredItem,
-    *,
-    dollars: bool,
+    period_meetings: list[dict] | None,
     meeting_video: str | None,
     work_session_video: str | None,
+    watch_starts: dict[str, dict] | None = None,
 ) -> str | None:
-    """Why this item is a highlight, as the measured signals that ranked it.
+    """Where in the recording this item comes up, one link per meeting.
+
+    Says WHERE, not how long and not what happened there: an item can be a
+    staff presentation, a board discussion, a vote, or all three in one
+    evening, and a label that named any of them would be wrong for the others.
+    "from 28:37" also keeps it distinct from the quote's credit timestamp
+    directly above, which points at one sentence rather than at a segment.
+
+    Start times are the segmenter's, which run early and sometimes land on the
+    wrong thing entirely — August's budget item was anchored on its vote at
+    1:22:18 with the presentation at 7:20 unmeasured. A maintainer who has
+    watched the video can override the number per meeting in
+    `quotes-<period>.json`; see `_watch_seconds`.
+    """
+    overrides = (watch_starts or {}).get(s.item.number) or {}
+
+    def start(numberdate: str | None, fallback: float | None) -> float | None:
+        if numberdate and (raw := overrides.get(numberdate)) is not None:
+            return _watch_seconds(raw)
+        return fallback
+
+    def label(video: str | None, fallback: str) -> tuple[str, str | None]:
+        """This meeting's own label from the period list, and its numberdate."""
+        for m in (period_meetings or []):
+            if video and m.get("video") == video:
+                return m["label"], m["numberdate"]
+        return fallback, None
+
+    links = []
+    for video, fallback_label, fallback_start in (
+        (work_session_video, "the work session", s.signals.work_session_start_seconds),
+        (meeting_video, "the regular meeting", s.signals.meeting_start_seconds),
+    ):
+        name, numberdate = label(video, fallback_label)
+        at = start(numberdate, fallback_start)
+        if at is None:
+            continue
+        if url := _watch_url(video, at):
+            links.append(f"[{name}, from {_clock(at)}]({url})")
+    if not links:
+        return None
+    return "**Watch this agenda item:** " + " · ".join(links)
+
+
+def _signal_line(s: ScoredItem, *, dollars: bool) -> str | None:
+    """What is known about this item beyond its own text: prior comment, cost.
 
     A recap-local twin of `score.evidence_line`, deliberately NOT that function:
     `evidence_line` also feeds the forecast product and the checkpoint printout,
-    and this layout hangs links off individual clauses — the watch link on the
-    minutes it measures, the packet link on the attachment count — which only
-    makes sense in a reader-facing recap.
+    and drops or keeps different clauses than a reader-facing recap wants.
 
     Dropped relative to `evidence_line`: the vote outcome (the full tally gets
     its own line below), the rubric score (an internal ranking input a reader
     has no way to check), and the attachment count (the documents are named on
     their own line — see `_attachments_block`). Clauses whose data is absent are
     dropped, so the line degrades rather than lying.
+
+    Dropped from this line too, and deliberately: the measured minutes. They
+    opened every highlight with an arithmetic claim the reader could not check
+    without watching the whole segment, and the number was wrong in a way that
+    read as precision — the segmenter is asked for where the BOARD discussed an
+    item, so a staff presentation on it counts as zero (August's budget item
+    measured 0.5 min because only the vote was captured). The video links moved
+    to `_watch_line`, which points at where the item comes up without claiming
+    how long it ran. Minutes still rank items; they no longer make a claim on
+    the page.
     """
-    timings: list[str] = []
     parts: list[str] = []
-
-    def timed(minutes: float, label: str, video: str | None, start: float | None) -> None:
-        # The verb goes in front of the FIRST timing clause only. An item
-        # measured at both meetings would otherwise read "Discussed 6 min at
-        # the regular meeting and Discussed 48 min at the work session".
-        verb = "Discussed " if not timings else ""
-        clause = f"{verb}{_round_minutes(minutes)} {label}"
-        if (url := _watch_url(video, start)) and start is not None:
-            clause += f" [(Watch)]({url})"
-        timings.append(clause)
-
-    if s.signals.meeting_minutes > 0:
-        timed(s.signals.meeting_minutes, "at the regular meeting",
-              meeting_video, s.signals.meeting_start_seconds)
-    if s.signals.work_session_minutes > 0:
-        timed(s.signals.work_session_minutes, "at the work session",
-              work_session_video, s.signals.work_session_start_seconds)
-    # Older saved score JSON predates the meeting/work-session split, and knows
-    # only a total. No "at the ..." to append, and the verb is already in front.
-    if not timings and s.signals.discussion_minutes > 0:
-        timings.append(f"Discussed {_round_minutes(s.signals.discussion_minutes)}")
-
-    # An item discussed at both meetings reads as one sentence — "Discussed 6
-    # min at the regular meeting (Watch) and 48 min at the work session
-    # (Watch)" — rather than as two clauses divided by a bullet.
-    if timings:
-        parts.append(" and ".join(timings))
 
     if s.signals.carry_forward_note:
         parts.append(f"prior comment: {s.signals.carry_forward_note}")
@@ -809,24 +861,11 @@ def _quote_block(
     return lines + [""]
 
 
-# The lead-in over every list of speaker timestamps under a highlight. A bare
-# timestamp does not announce that it is a link into the recording at that
-# speaker's turn.
-_TIMESTAMP_NOTE = "Timestamps open the meeting recording at each speaker's turn:"
-
-
-def _speaker_excerpt(anchor, speaker_quotes: dict[str, dict] | None) -> str:
-    """The maintainer's short excerpt for one public-comment speaker, if any.
-
-    Keyed by meeting and by the anchor's own start_seconds — the same number
-    the timestamp link is built from — so an excerpt cannot drift onto the
-    speaker beside it. Missing is the normal case and renders nothing.
-    """
-    if not speaker_quotes or not anchor.meeting:
-        return ""
-    return (speaker_quotes.get(anchor.meeting) or {}).get(
-        str(int(anchor.start_seconds)), ""
-    )
+# Tacked onto the end of the sentence that introduces a list of speaker
+# timestamps, not set on its own line: a bare timestamp does not announce that
+# it is a link into the recording at that speaker's turn, but the note is a
+# gloss on the count it follows, not a heading over the list.
+_TIMESTAMP_NOTE = "Timestamps open the meeting recording at each speaker's turn."
 
 
 def _speaker_video(
@@ -851,7 +890,7 @@ def _highlight_speakers(
 
     Same rule as the section below: one link per speaker, so the number of
     links IS the count and a reader who doubts it can check in five seconds.
-    What the speakers said is a word count (`_word_line`), not a quote.
+    What each of them said is behind their own timestamp, not summarized here.
     """
     def stamp(a) -> str | None:
         url = _watch_url(
@@ -861,36 +900,26 @@ def _highlight_speakers(
         return f"[{_clock(a.start_seconds)}]({url})" if url else None
 
     n = topic.count
-    lines = [f"**Public comment:** {n} public comment speaker"
-             f"{'s' if n != 1 else ''} on this item.", ""]
+    head = (f"**Public comment:** {n} public comment speaker"
+            f"{'s' if n != 1 else ''} on this item.")
+    if any(stamp(a) for a in topic.anchors):
+        head += f" {_TIMESTAMP_NOTE}"
+    lines = [head, ""]
 
-    # Grouped by what each speaker asked for, when the speakers actually split
-    # into groups (see `pubcomment.group_subtopics`, which returns nothing when
-    # they do not). Six timestamps in a row say six people cared; the groups say
-    # what six people wanted, and the timestamps under each are still one per
-    # speaker, so the links keep adding up to the count.
-    if topic.subtopics:
-        rows = []
-        for group in topic.subtopics:
-            stamps = [t for a in group.anchors if (t := stamp(a))]
-            head = f"- **{group.label[:1].upper() + group.label[1:]}**"
-            # A group of one is just that speaker, so the count would only be
-            # restating the single link beside it. Say "2 speakers" when the
-            # number is the point.
-            if group.count > 1:
-                head += f" — {group.count} speakers"
-            rows.append(f"{head} — {' · '.join(stamps)}" if stamps else head)
-        return lines + [_TIMESTAMP_NOTE, ""] + rows + [""]
-
+    # NOT grouped by what each speaker asked for. `pubcomment.group_subtopics`
+    # still computes those groups and the tally JSON still carries them, but
+    # the recap prints bare timestamps: the labels were the model's words, they
+    # were the last model-written text on the page, and a label is a
+    # description of two minutes of speech that a reader can only check by
+    # listening to the two minutes — at which point the label has done nothing
+    # the timestamp beside it did not already do.
     links = [f"- {t}" for a in topic.anchors if (t := stamp(a))]
     if not links:
         return lines
-    # One timestamp per line, under a lead-in that says what a timestamp IS.
+    # One timestamp per line, under the count that glosses what a timestamp IS.
     # Run together on one row they read as a reference code rather than as an
-    # invitation to click, and six of them wrapped mid-link. Inside a subtopic
-    # group above they DO run together: one or two per line, behind a label
-    # that says what the click is for.
-    return lines + [_TIMESTAMP_NOTE, ""] + links + [""]
+    # invitation to click, and six of them wrapped mid-link.
+    return lines + links + [""]
 
 
 def _public_comment_section(
@@ -900,7 +929,6 @@ def _public_comment_section(
     meeting_video: str | None = None,
     work_session_video: str | None = None,
     moved: set[str] | None = None,
-    speaker_quotes: dict[str, dict] | None = None,
 ) -> list[str]:
     """The speaker tally — a count per topic, ranked, each speaker linked.
 
@@ -939,11 +967,11 @@ def _public_comment_section(
     head = f"{n} {'person' if n == 1 else 'people'} spoke during public comment."
     if listed < n:
         head += f" {n - listed} are counted with the highlights above."
-    # Same lead-in as under a highlight, and it goes LAST so it sits directly
-    # above the list it explains: a bare timestamp does not announce that it is
-    # a link into the video at that speaker's turn.
+    # Same gloss as under a highlight, on the same line as the count it
+    # explains: a bare timestamp does not announce that it is a link into the
+    # video at that speaker's turn.
     if any(t.anchors for t in topics):
-        head += " Each timestamp opens the video at that speaker's turn."
+        head += f" {_TIMESTAMP_NOTE}"
     lines += [head, ""]
 
     def video_for(anchor) -> str | None:
@@ -968,10 +996,7 @@ def _public_comment_section(
         for a in t.anchors:
             if not (url := _watch_url(video_for(a), a.start_seconds)):
                 continue
-            row = f"  - [{_clock(a.start_seconds)}]({url})"
-            if (excerpt := _speaker_excerpt(a, speaker_quotes)):
-                row += f" — “{excerpt}”"
-            links.append(row)
+            links.append(f"  - [{_clock(a.start_seconds)}]({url})")
         lines.append(head + (":" if links else ""))
         lines += links
     lines.append("")
@@ -994,8 +1019,14 @@ def render_recap(
     packet_paths: dict[str, str] | None = None,
     attachment_paths: dict[str, str] | None = None,
     quotes: dict[str, dict] | None = None,
+    # The maintainer's per-speaker excerpts from `quotes-<period>.json`. Kept
+    # in the file and still loaded, but nothing renders them: a short quote
+    # beside every timestamp under "More Public Comment" crowded a list whose
+    # job is to be countable. Accepted here so the file and its callers stay
+    # intact if they are wanted back.
     speaker_quotes: dict[str, dict] | None = None,
     vote_notes: dict[str, dict] | None = None,
+    watch_starts: dict[str, dict] | None = None,
 ) -> str:
     """Render the post-meeting recap: top highlights + vote-count lists.
 
@@ -1074,22 +1105,27 @@ def render_recap(
         lines += [f"### {s.item.title.strip()}", ""]
 
         cost = _cost_line(s.item)
-        signals = _signal_line(
-            s,
-            dollars=not cost,
-            meeting_video=meeting_video,
-            work_session_video=work_session_video,
-        )
-        if signals:
-            lines += [signals, ""]
 
-        # The maintainer's quote sits under the signals, so the reader learns
-        # why the item is here and then hears someone at the meeting say it —
-        # before the packet's own wording, which is the driest thing on the page.
+        # A highlight opens with somebody at the meeting saying something. The
+        # measured minutes used to sit here and no longer appear at all (see
+        # `_signal_line`): a reader met the item as a number they could not
+        # check before they met it as a person talking.
         if (quote := (quotes or {}).get(s.item.number)):
             lines += _quote_block(
                 quote, period_meetings, meeting_video, work_session_video
             )
+
+        # Then where to watch the item itself — after the quote, because the
+        # quote's own timestamp points at one sentence and this points at the
+        # whole segment, and the reader should meet them in that order.
+        if (watch := _watch_line(
+            s, period_meetings, meeting_video, work_session_video, watch_starts,
+        )):
+            lines += [watch, ""]
+
+        signals = _signal_line(s, dollars=not cost)
+        if signals:
+            lines += [signals, ""]
 
         description, trimmed = _item_description(s.item)
         label = "**From the agenda item (excerpt):**" if trimmed else "**From the agenda item:**"
@@ -1131,7 +1167,6 @@ def render_recap(
             public_comment, period_meetings,
             meeting_video=meeting_video, work_session_video=work_session_video,
             moved=set(pc_by_item),
-            speaker_quotes=speaker_quotes,
         )
 
     # --- Everything else, counted rather than listed ---
@@ -1166,15 +1201,16 @@ def render_recap(
     # --- Footer ---
     lines += ["## Upcoming Meetings", ""]
     for e in logistics.upcoming_meetings:
-        lines.append(f"- {_schedule_line(e)}")
+        lines += _schedule_lines(e)
     if logistics.upcoming_meetings:
         lines.append("")
     if logistics.upcoming_events:
         lines += ["**Upcoming events**", ""]
         for e in logistics.upcoming_events:
-            lines.append(f"- {_schedule_line(e)}")
+            lines += _schedule_lines(e)
         lines.append("")
     lines += [f"**How to participate:** {_participation_note(logistics)}", ""]
+    lines += [_CONTACT_NOTE, ""]
 
     return "\n".join(lines).rstrip() + "\n"
 
