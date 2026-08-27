@@ -128,3 +128,29 @@ had been ending on the chair saying "our last speaker is Robert Fier" the whole
 time. The script now mirrors run_period. Re-slicing changed the cache key, so
 `classify_speakers` re-ran once (billed) and every anchor moved a few seconds —
 harmless now that nothing on the page is keyed to those anchors.
+
+## 2026-08-27 — Human-labeled watch links, topic-label overrides
+
+The `watch` block in `quotes-<period>.json` now takes a `{label: timestamp}`
+object per meeting, rendered as bare `[Watch <label>]` links. This overturns
+`_watch_line`'s old rationale — that naming a segment "Presentation" or
+"Discussion" would be wrong for the other things that happen under one item —
+on the grounds that the label now comes from a person who watched the video,
+the same bargain `quotes` and `votes` already make. Kept the plain "from
+MM:SS" form as the default; the object form is opt-in per item. When any
+meeting for an item uses the object form the item goes explicit-only: a
+meeting with no entry, or an entry set to `null`, emits nothing. `null` was
+chosen over silent omission so a checked-and-empty meeting (Aug 18
+redistricting, which was Hosang on unrelated matters) is on the record.
+
+New `topics` block overrides the classifier's off-agenda topic wording,
+keyed by its own label casefolded. Deliberately display-only:
+`pubcomment-review-*.md` still shows the classifier's words, because that
+file's job is checking the label against the captions. Did NOT touch
+`pubcomment._SYSTEM` to get the nicer wording — that re-bills the llmcache
+entry and puts the phrasing back in the model's hands.
+
+Split-vote no-votes can now be named in "Other Agenda Items" via a `nay`
+list in the `votes` block, matched to the recovered tally the same way
+absentees are. Aug 4 Personnel Actions: Kimberley Hundley, confirmed off
+the video at 1:18:32.
