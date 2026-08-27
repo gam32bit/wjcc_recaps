@@ -111,7 +111,7 @@ pathlib.Path(f"out/recap-pubcomment-{PERIOD}.json").write_text(
 
 item_slices, attachment_slices = mn._packet_paths(
     sorted(sources, key=lambda s: s.numberdate))
-quotes, speaker_quotes, vote_notes, watch_starts = mn._load_quotes(PERIOD)
+quotes, speaker_quotes, vote_notes, watch_starts, topic_labels = mn._load_quotes(PERIOD)
 
 top = [s for s in scored if s.item.number in HIGHLIGHTS]
 body = render_recap(
@@ -124,7 +124,7 @@ body = render_recap(
     period_meetings=meta["period_meetings"],
     packet_paths=item_slices, attachment_paths=attachment_slices,
     quotes=quotes, speaker_quotes=speaker_quotes, vote_notes=vote_notes,
-    watch_starts=watch_starts,
+    watch_starts=watch_starts, topic_labels=topic_labels,
 )
 out = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "recap-new.md")
 out.write_text(body)

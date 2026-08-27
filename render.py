@@ -557,26 +557,33 @@ def _watch_line(
     work_session_video: str | None,
     watch_starts: dict[str, dict] | None = None,
 ) -> str | None:
-    """Where in the recording this item comes up, one link per meeting.
+    """Where in the recording this item comes up.
 
-    Says WHERE, not how long and not what happened there: an item can be a
-    staff presentation, a board discussion, a vote, or all three in one
-    evening, and a label that named any of them would be wrong for the others.
-    "from 28:37" also keeps it distinct from the quote's credit timestamp
-    directly above, which points at one sentence rather than at a segment.
+    Default form says WHERE, not how long and not what happened there: an item
+    can be a staff presentation, a board discussion, a vote, or all three in
+    one evening, and a label the pipeline picked for any of them would be
+    wrong for the others — so it renders "from 28:37" and lets the reader
+    seek. "from 28:37" also keeps it distinct from the quote's credit
+    timestamp directly above, which points at one sentence, not a segment.
 
-    Start times are the segmenter's, which run early and sometimes land on the
-    wrong thing entirely — August's budget item was anchored on its vote at
-    1:22:18 with the presentation at 7:20 unmeasured. A maintainer who has
-    watched the video can override the number per meeting in
-    `quotes-<period>.json`; see `_watch_seconds`.
+    A maintainer who has watched the video can override the anchor per meeting
+    in `quotes-<period>.json`'s `watch` block (see `_watch_seconds`):
+
+      "0804-6.01": {"20260804": "28:37"}          # move the single anchor
+      "0804-6.01": {"20260804": {"Presentation": "7:20",
+                                 "Discussion": "14:18"}}
+
+    The second form renders one "[Watch <label>]" link per entry, in file
+    order, with no "Watch this agenda item:" prefix. The label there is a
+    person's word for what that timestamp points at — the same bargain the
+    `quotes` and `votes` blocks make: a human watched and wrote it down, so
+    the recap may name it. When any meeting for an item uses the dict form,
+    the item is in explicit-only mode: a meeting with no entry (or an entry
+    set to null, meaning "a person checked and there is nothing here") emits
+    no link.
     """
     overrides = (watch_starts or {}).get(s.item.number) or {}
-
-    def start(numberdate: str | None, fallback: float | None) -> float | None:
-        if numberdate and (raw := overrides.get(numberdate)) is not None:
-            return _watch_seconds(raw)
-        return fallback
+    labeled_mode = any(isinstance(v, dict) for v in overrides.values())
 
     def label(video: str | None, fallback: str) -> tuple[str, str | None]:
         """This meeting's own label from the period list, and its numberdate."""
@@ -585,20 +592,34 @@ def _watch_line(
                 return m["label"], m["numberdate"]
         return fallback, None
 
-    links = []
+    links: list[str] = []
+    saw_plain = False
     for video, fallback_label, fallback_start in (
         (work_session_video, "the work session", s.signals.work_session_start_seconds),
         (meeting_video, "the regular meeting", s.signals.meeting_start_seconds),
     ):
         name, numberdate = label(video, fallback_label)
-        at = start(numberdate, fallback_start)
+        has_entry = numberdate is not None and numberdate in overrides
+        ov = overrides.get(numberdate) if numberdate is not None else None
+        if isinstance(ov, dict):
+            for seg_label, raw in ov.items():
+                at = _watch_seconds(raw)
+                if at is not None and (url := _watch_url(video, at)):
+                    links.append(f"[Watch {seg_label}]({url})")
+            continue
+        if labeled_mode and (not has_entry or ov is None):
+            continue
+        at = _watch_seconds(ov) if ov is not None else fallback_start
         if at is None:
             continue
         if url := _watch_url(video, at):
             links.append(f"[{name}, from {_clock(at)}]({url})")
+            saw_plain = True
     if not links:
         return None
-    return "**Watch this agenda item:** " + " · ".join(links)
+    if saw_plain:
+        return "**Watch this agenda item:** " + " · ".join(links)
+    return " · ".join(links)
 
 
 def _signal_line(s: ScoredItem, *, dollars: bool) -> str | None:
@@ -1027,6 +1048,11 @@ def render_recap(
     speaker_quotes: dict[str, dict] | None = None,
     vote_notes: dict[str, dict] | None = None,
     watch_starts: dict[str, dict] | None = None,
+    # Maintainer's replacement wording for an off-agenda public-comment topic,
+    # keyed by the classifier's own label, casefolded. The one place a person
+    # can overrule the model's topic phrasing — reviewed the same way the
+    # label itself is; see `quotes-<period>.json`'s `topics` block.
+    topic_labels: dict[str, str] | None = None,
 ) -> str:
     """Render the post-meeting recap: top highlights + vote-count lists.
 
@@ -1041,6 +1067,14 @@ def render_recap(
     """
     date_str = _format_date(logistics.date)
     lines: list[str] = []
+
+    # A person's wording for an off-agenda topic replaces the classifier's,
+    # before anything downstream reads it. Applied here so every use — the
+    # tally list, the lead paragraph — sees the same label.
+    if public_comment and topic_labels:
+        for t in public_comment.off_agenda:
+            if (ov := topic_labels.get(t.label.casefold())):
+                t.label = ov
 
     # A period recap covers several meetings, so it is titled by the period and
     # names the meetings it read; a single-meeting recap keeps its own date.

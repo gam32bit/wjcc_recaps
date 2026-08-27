@@ -107,18 +107,53 @@
    "on the page claims a duration any more, so an override moves one",
    "link and nothing else.",
    "",
-   "Both entries below were read off the video by a person. 6.01's saved",
-   "anchor was 28:11, which lands in the tail of the previous item.",
-   "8.07's was 1:22:18 — the VOTE. The board took the item up at 7:20 as",
-   "5.01 and voted it the same evening as 8.07, and the segmenter is",
-   "asked for where the board discussed or voted, so the staff",
-   "presentation between the two was never captured (see CLAUDE.md)."
+   "A meeting's value may instead be an OBJECT of label -> timestamp:",
+   "  \"20260804\": {\"Presentation\": \"7:20\", \"Discussion\": \"14:18\"}",
+   "Each entry renders as its own '[Watch <label>]' link, in file order,",
+   "with no 'Watch this agenda item:' prefix. The label is a person's word",
+   "for what that timestamp points at — allowed here for the same reason a",
+   "quote or an absentee name is: a human watched and wrote it down. When",
+   "ANY meeting for an item uses the object form the item is explicit-only:",
+   "a meeting with no entry, or an entry set to null (meaning 'a person",
+   "checked and there is nothing here'), emits no link.",
+   "",
+   "6.01: saved anchor 28:11 landed in the previous item's tail; a person",
+   "read the presentation at 28:37 and the board discussion at 52:20 off",
+   "the Aug 4 work session. The Aug 18 anchor (48:54) was Mr. Hosang on",
+   "unrelated matters — set to null. 8.07's saved anchor was 1:22:18, the",
+   "VOTE; the item was taken up at 7:20 as 5.01 (presentation) with board",
+   "discussion at 14:18 and voted the same evening as 8.07 (see CLAUDE.md)."
   ],
   "0804-6.01": {
-   "20260804": "28:37"
+   "20260804": {
+    "Presentation": "28:37",
+    "Discussion": "52:20"
+   },
+   "20260818": null
   },
   "0804-8.07": {
-   "20260804": "7:20"
+   "20260804": {
+    "Presentation": "7:20",
+    "Discussion": "14:18"
+   }
   }
+ },
+ "topics": {
+  "_README": [
+   "A person's replacement wording for an off-agenda public-comment topic,",
+   "keyed by the classifier's OWN label (case-insensitive); the value is",
+   "what the recap prints instead. This is the one place the model's topic",
+   "phrasing can be overruled by hand, and it is reviewed the same way the",
+   "label itself is (out/pubcomment-review-<numberdate>.md).",
+   "",
+   "DISPLAY ONLY: the review file still shows the classifier's own label",
+   "over the captions it was assigned from, because that is what has to be",
+   "checked against the source. This block only changes the recap page.",
+   "",
+   "'school renaming request' -> 'Renaming James Blair Middle School': the",
+   "classifier's Jan-Aug wording drifted; the single Aug 18 speaker",
+   "(30:34) asked to rename James Blair Middle School by name."
+  ],
+  "school renaming request": "Renaming James Blair Middle School"
  }
 }

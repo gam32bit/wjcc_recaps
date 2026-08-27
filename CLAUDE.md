@@ -102,7 +102,17 @@ an LLM judgment call? Prefer the signal.
   August budget item measured 0.5 minutes: the vote, with its 7:20
   presentation unmeasured. Anchors are wrong often enough that a person can
   override the watch link per item per meeting in `quotes-<period>.json`'s
-  `watch` block.
+  `watch` block — either a replacement timestamp, or an object of
+  `{label: timestamp}` that renders `[Watch <label>]` links (e.g. a
+  "Watch Presentation" / "Watch Discussion" pair). The label there names
+  what a timestamp points at and is allowed for the same reason a quote is:
+  a human watched the video and wrote it, so it is not the model's word and
+  the phrase "would be wrong for the other segments" no longer applies. The
+  off-agenda public-comment topic labels the classifier writes can likewise
+  be overruled by hand in the same file's `topics` block (keyed by the
+  classifier's own label); it is display-only, so
+  `out/pubcomment-review-<numberdate>.md` still shows the classifier's
+  wording for review.
 - **Every Claude call is cached to `.cache/llm/`** by `llmcache.py`, keyed by a
   hash of the whole request (model, prompt, schema, transcript), so re-running
   the pipeline on unchanged inputs costs nothing. Edit a prompt or bump the

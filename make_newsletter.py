@@ -488,14 +488,17 @@ def _packet_paths(
 
 def _load_quotes(
     period: str,
-) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict], dict[str, dict]]:
+) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict], dict[str, dict],
+           dict[str, str]]:
     """Maintainer-chosen quotes for this period, from `quotes-<period>.json`.
 
     Returns (one quote per agenda item, one excerpt per public-comment
     speaker, one roll-call note per item — who was absent or abstaining, named
     by a person because the captions cannot name them; see `render._who` —
-    and one watch-start override per item per meeting, for when the segmenter
-    anchored the item on the wrong moment; see `render._watch_line`).
+    one watch-start override per item per meeting, for when the segmenter
+    anchored the item on the wrong moment; see `render._watch_line` — and one
+    replacement wording per off-agenda public-comment topic, keyed by the
+    classifier's own label casefolded; see `render_recap`'s `topic_labels`).
     Human-owned in the way `rubric.md` is: a person watches the
     meeting, picks the line, and records where it came from. Nothing in the
     pipeline writes this file, and a period without one renders no quotes.
@@ -503,7 +506,7 @@ def _load_quotes(
     path = PROJECT_DIR / f"quotes-{period}.json"
     if not path.is_file():
         print(f"  No {path.name} — rendering without quotes.")
-        return {}, {}, {}, {}
+        return {}, {}, {}, {}, {}
     data = json.loads(path.read_text())
     items = data.get("items", {})
     speakers = data.get("speakers", {})
@@ -512,11 +515,13 @@ def _load_quotes(
     # it travels with the thing it documents. Never an item number.
     watch_starts = {k: v for k, v in data.get("watch", {}).items()
                     if not k.startswith("_")}
+    topic_labels = {k.casefold(): v for k, v in data.get("topics", {}).items()
+                    if not k.startswith("_")}
     n_speakers = sum(len(v) for v in speakers.values())
     print(f"  {len(items)} item quote(s), {n_speakers} speaker excerpt(s), "
-          f"{len(vote_notes)} roll-call note(s) and {len(watch_starts)} watch "
-          f"override(s) from {path.name}.")
-    return items, speakers, vote_notes, watch_starts
+          f"{len(vote_notes)} roll-call note(s), {len(watch_starts)} watch "
+          f"override(s) and {len(topic_labels)} topic label(s) from {path.name}.")
+    return items, speakers, vote_notes, watch_starts, topic_labels
 
 
 def run_period(
@@ -711,7 +716,7 @@ def run_period(
     # --- Step 5: render + save ---
     ordered = sorted(sources, key=lambda s: s.numberdate)
     item_slices, attachment_slices = _packet_paths(ordered)
-    quotes, speaker_quotes, vote_notes, watch_starts = _load_quotes(period)
+    quotes, speaker_quotes, vote_notes, watch_starts, topic_labels = _load_quotes(period)
     body = render_recap(
         result.logistics,
         top_items,
@@ -732,6 +737,7 @@ def run_period(
         speaker_quotes=speaker_quotes,
         vote_notes=vote_notes,
         watch_starts=watch_starts,
+        topic_labels=topic_labels,
     )
 
     score_path = OUT_DIR / f"recap-score-{period}.json"
