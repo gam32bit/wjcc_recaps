@@ -48,14 +48,16 @@
   "[three-letter] identifier ahead of the message' — because no speaker is",
   "placed there any more. Re-key it by hand if that speaker is real.",
   "",
-  "'votes' names the members a roll call recorded as ABSENT or ABSTAINING,",
-  "keyed by the same namespaced item number. This is the one place a member's",
-  "name reaches the page, and it is here — in the human's file — because the",
-  "captions cannot support it: votes.py reads the roll call off an ASR track",
-  "that spells Cavazos as Kvassos, Kabaso and Vasquez. A name goes in only",
-  "after a person has checked the caption roll call against the board's real",
-  "roster and written down how they did it in 'note'. Leave the block out and",
-  "the tally prints '(1 absent)', which is always true."
+  "'votes' names the members a roll call recorded as ABSENT, ABSTAINING or",
+  "voting NAY, in 'absent' / 'abstain' / 'nay' lists keyed by the namespaced",
+  "item number. This is the one place a member's name reaches the page, and",
+  "it is here — in the human's file — because the captions cannot support",
+  "it: votes.py reads the roll call off an ASR track that spells Cavazos as",
+  "Kvassos, Kabaso and Vasquez. A name goes in only after a person has",
+  "checked the caption roll call against the board's real roster and written",
+  "down how they did it in 'note'. Leave a list out and the tally prints the",
+  "bare count — '(1 absent)', 'Approved 5-1' — which is always true. A list",
+  "whose length does not match what the roll call counted is ignored."
  ],
  "items": {
   "0804-6.01": {
@@ -87,6 +89,12 @@
   }
  },
  "votes": {
+  "0804-8.01": {
+   "nay": [
+    "Kimberley Hundley"
+   ],
+   "note": "Approval of Personnel Actions, Aug 4, 5-1. The maintainer watched the roll call at 1:18:32 in the work-session video and confirmed the lone No came from Kimberley Hundley (captions render her 'Mrs. Hunley'). Ms. Aller/'Ms. Oller' is Michael Hosang, called first with no answer (absent). The other five — Hodges, Riffel, Cabazos, Chen, Donner — voted aye."
+  },
   "0804-8.07": {
    "absent": [
     "Michael Hosang"

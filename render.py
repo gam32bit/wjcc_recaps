@@ -302,13 +302,12 @@ _PARTICIPATION_NOTE = (
 
 
 # The district's own page for the board, which lists every member with their
-# contact address. Deliberately the roster page and not a mailbox: the board
-# has seven members, no single address reaches them as a body, and this recap
-# does not name members outside a roll call's absentees. The sentence promises
-# a page of contacts because that is what the link opens.
+# contact information. Deliberately the roster page and not a mailbox: the
+# board has seven members and no single address reaches them as a body. The
+# sentence promises a page of contacts because that is what the link opens.
 _CONTACT_NOTE = (
-    "**Contact the board:** every member's email address is listed on the "
-    "district's [School Board page]"
+    "**Contact the board:** The school boardmember's contact information is "
+    "listed on the division's [School Board page]"
     "(https://wjccschools.org/about-wjcc/leadership/school-board/)."
 )
 
@@ -756,11 +755,24 @@ def _remaining_by_meeting(
     return groups
 
 
-def _action_line(item: AgendaItem) -> str:
-    """One routine action item: its own title, and how the board voted."""
+def _action_line(item: AgendaItem, vote_notes: dict[str, dict] | None = None) -> str:
+    """One routine action item: its own title, and how the board voted.
+
+    A split vote names the members who voted no when — and only when — a
+    person has written them into `quotes-<period>.json`'s `votes` block after
+    checking the caption roll call against the board's roster (see `_who`);
+    otherwise the count stands alone, as it does for absentees.
+    """
     tally = vote_summary(item)
     title = " ".join(item.title.split())
-    return f"  - {title} — **{tally}**" if item.vote else f"  - {title}"
+    if not item.vote:
+        return f"  - {title}"
+    line = f"  - {title} — **{tally}**"
+    v = item.vote
+    if v.source == "transcript" and v.nay:
+        named = (vote_notes or {}).get(item.number) or {}
+        line += f" ({_who(named.get('nay'), len(v.nay), 'voted no')})"
+    return line
 
 
 def _consent_summary(consent: list[AgendaItem]) -> str:
@@ -1217,7 +1229,7 @@ def render_recap(
             # district's meetings landing page, which shows the next meeting
             # rather than this one, and a link that lands somewhere else is
             # worse here than no link at all.
-            rows = [_action_line(i) for i in actions]
+            rows = [_action_line(i, vote_notes) for i in actions]
             if batch:
                 rows.append(f"  - {_consent_summary(batch)}")
             if where or agenda:

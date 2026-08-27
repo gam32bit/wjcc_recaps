@@ -40,9 +40,10 @@ have to be honest and defensible to readers, not "our AI thinks these matter."
      already offers. The model's words now reach the page in exactly one
      place, the off-agenda topic labels in "More Public Comment", and those
      get reviewed the same way (see below). Members' names appear in
-     one place only, a roll call's absentees, and only when a person has
-     written the name into `quotes-<period>.json` after checking the captions
-     against the board's published roster;
+     one place only, a roll call's absentees, abstainers and no-votes, and
+     only when a person has written the name into `quotes-<period>.json`'s
+     `votes` block after checking the captions against the board's published
+     roster;
   3. **a quote from the meeting video, chosen by the maintainer** and recorded
      in `quotes-<period>.json`. Nothing in the pipeline picks, writes or ranks
      these; a person watches the meeting and puts the line in the file. The
