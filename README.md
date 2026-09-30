@@ -7,8 +7,10 @@ assembles a post that a human reviews and publishes to Substack.
 
 **Nothing in the recap is written by a language model.** Each highlight is the
 agenda item's own title plus its verbatim `BACKGROUND:` text as an attributed
-block quote; public comment is a counted tally of speakers, each one a bare
-timestamp link into the video; vote tallies are counts read off the meeting's
+block quote; public comment is a counted tally of numbered speakers, each
+linked into the video at their turn — with, where the maintainer picked one,
+a caption excerpt and a second link to where it is spoken, grouped under the
+maintainer's own subtopic headings; vote tallies are counts read off the meeting's
 roll call. No line claims how long anything took. The model's only
 reader-facing words are the few that name an off-agenda topic somebody raised
 — "special education inclusion" over the timestamps of the people who raised

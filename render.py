@@ -899,6 +899,12 @@ def _quote_block(
 # it is a link into the recording at that speaker's turn, but the note is a
 # gloss on the count it follows, not a heading over the list.
 _TIMESTAMP_NOTE = "Timestamps open the meeting recording at each speaker's turn."
+# The same gloss when a speaker line carries a maintainer's excerpt, which
+# brings a second, unlabelled timestamp that has to be told apart from the first.
+_QUOTE_TIMESTAMP_NOTE = (
+    "Quotes are from the meeting's automatic captions. The first timestamp opens "
+    "the recording at the speaker's turn, the second where the quote begins."
+)
 
 
 def _speaker_video(
@@ -913,40 +919,141 @@ def _speaker_video(
     return meeting_video or work_session_video
 
 
+class _SpeakerLines:
+    """Renders one public-comment speaker as a list entry.
+
+    `**Speaker #N** ([turn])`, and when the maintainer has put an excerpt for
+    that speaker in `quotes-<period>.json`, `: “excerpt” ([quote])` after it.
+    N is the speaker's place in the order everyone spoke at that meeting — a
+    count, not a name — so the numbers under one topic skip the speakers
+    counted under another. The first timestamp is the speaker's turn, where
+    the tally counts them; the second is where the excerpt begins in the
+    captions (`pubcomment.locate_quote`), or the entry's own `quote_start`
+    when a person set one by hand. An excerpt with neither renders without
+    its second link rather than borrowing the first.
+    """
+
+    def __init__(
+        self,
+        public_comment: PublicCommentTally | None,
+        period_meetings: list[dict] | None,
+        meeting_video: str | None,
+        work_session_video: str | None,
+        speaker_quotes: dict[str, dict] | None,
+        quote_starts: dict[str, dict[float, float]] | None,
+    ):
+        self.period_meetings = period_meetings
+        self.meeting_video = meeting_video
+        self.work_session_video = work_session_video
+        self.quote_starts = quote_starts or {}
+        # Keys in the file are start_seconds as written by a person, "2338"
+        # or "2338.0"; the anchors carry floats.
+        self.excerpts: dict[str, dict[float, dict]] = {}
+        for meeting, entries in (speaker_quotes or {}).items():
+            for key, entry in entries.items():
+                try:
+                    self.excerpts.setdefault(meeting, {})[float(key)] = entry
+                except ValueError:
+                    continue
+        anchors = sorted(
+            {(a.meeting, a.start_seconds)
+             for t in ((public_comment.by_item + public_comment.off_agenda)
+                       if public_comment else [])
+             for a in t.anchors}
+        )
+        self.numbers: dict[tuple[str, float], int] = {}
+        for meeting in {m for m, _ in anchors}:
+            turns = [a for a in anchors if a[0] == meeting]
+            self.numbers.update({a: n for n, a in enumerate(turns, 1)})
+        # Two meetings' speakers both start at #1, so name the meeting too.
+        self.labels: dict[str, str] = {}
+        if len({m for m, _ in anchors}) > 1:
+            self.labels = {m["numberdate"]: m["label"]
+                           for m in period_meetings or []}
+
+    def _excerpt(self, a) -> dict | None:
+        entry = self.excerpts.get(a.meeting, {}).get(a.start_seconds)
+        return entry if entry and (entry.get("text") or "").strip() else None
+
+    def any_quoted(self, anchors) -> bool:
+        return any(self._excerpt(a) for a in anchors)
+
+    def __call__(self, a) -> str | None:
+        video = _speaker_video(a, self.period_meetings, self.meeting_video,
+                               self.work_session_video)
+        if not (url := _watch_url(video, a.start_seconds)):
+            return None
+        who = f"Speaker #{self.numbers.get((a.meeting, a.start_seconds), '?')}"
+        if (where := self.labels.get(a.meeting)):
+            who += f", {where}"
+        line = f"**{who}** ([{_clock(a.start_seconds)}]({url}))"
+        if not (entry := self._excerpt(a)):
+            return line
+        line += f": “{' '.join(entry['text'].split())}”"
+        at = (_watch_seconds(entry["quote_start"])
+              if entry.get("quote_start") is not None
+              else self.quote_starts.get(a.meeting, {}).get(a.start_seconds))
+        if at is not None and (qurl := _watch_url(video, at)):
+            line += f" ([{_clock(at)}]({qurl}))"
+        return line
+
+
 def _highlight_speakers(
     topic,
-    period_meetings: list[dict] | None,
-    meeting_video: str | None,
-    work_session_video: str | None,
+    speaker_line: _SpeakerLines,
+    groups: dict[str, list] | None = None,
 ) -> list[str]:
     """The speaker tally for ONE highlighted item, inline under that highlight.
 
     Same rule as the section below: one link per speaker, so the number of
     links IS the count and a reader who doubts it can check in five seconds.
-    What each of them said is behind their own timestamp, not summarized here.
-    """
-    def stamp(a) -> str | None:
-        url = _watch_url(
-            _speaker_video(a, period_meetings, meeting_video, work_session_video),
-            a.start_seconds,
-        )
-        return f"[{_clock(a.start_seconds)}]({url})" if url else None
+    What each of them said is behind their own timestamp, not summarized here;
+    the only words beside it are a person's excerpt of the captions, when one
+    is on file (see `_SpeakerLines`).
 
+    `groups` is the maintainer's subtopic grouping for this item, from
+    `quotes-<period>.json`'s `groups` block: {label: [speaker start_seconds]},
+    rendered in file order, each label a bold heading over its speakers. A
+    speaker in no group is listed last under "Other speakers", so the links
+    still add up to the count.
+    """
     n = topic.count
-    head = (f"**Public comment:** {n} public comment speaker"
-            f"{'s' if n != 1 else ''} on this item.")
-    if any(stamp(a) for a in topic.anchors):
+    if groups:
+        head = (f"**Public comment:** {n} {'person' if n == 1 else 'people'} "
+                "spoke on this item, grouped below by subtopic.")
+    else:
+        head = (f"**Public comment:** {n} public comment speaker"
+                f"{'s' if n != 1 else ''} on this item.")
+    if speaker_line.any_quoted(topic.anchors):
+        head += f" {_QUOTE_TIMESTAMP_NOTE}"
+    elif any(speaker_line(a) for a in topic.anchors):
         head += f" {_TIMESTAMP_NOTE}"
     lines = [head, ""]
 
     # NOT grouped by what each speaker asked for. `pubcomment.group_subtopics`
     # still computes those groups and the tally JSON still carries them, but
-    # the recap prints bare timestamps: the labels were the model's words, they
-    # were the last model-written text on the page, and a label is a
-    # description of two minutes of speech that a reader can only check by
+    # the recap prints one line per speaker in time order: the labels were
+    # the model's words, they were the last model-written text on the page,
+    # and a label is a description of two minutes of speech that a reader can only check by
     # listening to the two minutes — at which point the label has done nothing
     # the timestamp beside it did not already do.
-    links = [f"- {t}" for a in topic.anchors if (t := stamp(a))]
+    if groups:
+        by_start = {a.start_seconds: a for a in topic.anchors}
+        placed: set[float] = set()
+        sections = []
+        for label, keys in groups.items():
+            members = [by_start[k] for k in map(float, keys) if k in by_start]
+            placed.update(a.start_seconds for a in members)
+            sections.append((label, members))
+        sections.append(("Other speakers",
+                         [a for a in topic.anchors if a.start_seconds not in placed]))
+        for label, members in sections:
+            links = [f"- {t}" for a in members if (t := speaker_line(a))]
+            if links:
+                lines += [f"**{label}**", ""] + links + [""]
+        return lines
+
+    links = [f"- {t}" for a in topic.anchors if (t := speaker_line(a))]
     if not links:
         return lines
     # One timestamp per line, under the count that glosses what a timestamp IS.
@@ -957,13 +1064,16 @@ def _highlight_speakers(
 
 def _public_comment_section(
     public_comment: PublicCommentTally,
-    period_meetings: list[dict] | None = None,
+    period_meetings: list[dict] | None,
+    speaker_line: _SpeakerLines,
     *,
-    meeting_video: str | None = None,
-    work_session_video: str | None = None,
     moved: set[str] | None = None,
 ) -> list[str]:
-    """The speaker tally — a count per topic, ranked, each speaker linked.
+    """The speaker tally — topics ranked by count, each speaker linked.
+
+    Each topic is a bold heading over its flat speaker list, the same shape
+    as a highlight's subtopic groups; the count is the number of lines under
+    it, and the total sits in the sentence above the section.
 
     No prose, no names, no paraphrase. Every counted speaker gets a timestamp
     link into the video, so THE NUMBER OF LINKS IS THE COUNT: the bullet proves
@@ -1003,14 +1113,11 @@ def _public_comment_section(
     # Same gloss as under a highlight, on the same line as the count it
     # explains: a bare timestamp does not announce that it is a link into the
     # video at that speaker's turn.
-    if any(t.anchors for t in topics):
+    if speaker_line.any_quoted([a for t in topics for a in t.anchors]):
+        head += f" {_QUOTE_TIMESTAMP_NOTE}"
+    elif any(t.anchors for t in topics):
         head += f" {_TIMESTAMP_NOTE}"
     lines += [head, ""]
-
-    def video_for(anchor) -> str | None:
-        return _speaker_video(
-            anchor, period_meetings, meeting_video, work_session_video
-        )
 
     for t in topics:
         # Agenda titles arrive capitalized; off-agenda labels come back in the
@@ -1023,16 +1130,10 @@ def _public_comment_section(
             number = display_number(t.item_number)
             where = _meeting_label(t.item_number, period_meetings)
             tag = f" (Item {number}, {where})" if where else f" (Item {number})"
-        n = t.count
-        head = f"- **{label}**{tag} — {n} {'person' if n == 1 else 'people'}"
-        links = []
-        for a in t.anchors:
-            if not (url := _watch_url(video_for(a), a.start_seconds)):
-                continue
-            links.append(f"  - [{_clock(a.start_seconds)}]({url})")
-        lines.append(head + (":" if links else ""))
-        lines += links
-    lines.append("")
+        # A bold heading over a flat list, the same shape as a highlight's
+        # subtopic groups, so the two lists read as one kind of thing.
+        links = [f"- {line}" for a in t.anchors if (line := speaker_line(a))]
+        lines += [f"**{label}**{tag}", ""] + links + [""]
     return lines
 
 
@@ -1052,12 +1153,16 @@ def render_recap(
     packet_paths: dict[str, str] | None = None,
     attachment_paths: dict[str, str] | None = None,
     quotes: dict[str, dict] | None = None,
-    # The maintainer's per-speaker excerpts from `quotes-<period>.json`. Kept
-    # in the file and still loaded, but nothing renders them: a short quote
-    # beside every timestamp under "More Public Comment" crowded a list whose
-    # job is to be countable. Accepted here so the file and its callers stay
-    # intact if they are wanted back.
+    # The maintainer's per-speaker excerpts from `quotes-<period>.json`, by
+    # meeting numberdate then speaker start_seconds, and where each excerpt
+    # begins in the video — found in the captions by the pipeline
+    # (`pubcomment.locate_speaker_quotes`), so rendering stays layout-only.
+    # See `_SpeakerLines`.
     speaker_quotes: dict[str, dict] | None = None,
+    speaker_quote_starts: dict[str, dict[float, float]] | None = None,
+    # The maintainer's subtopic grouping of a highlighted item's speakers, by
+    # namespaced item number; see `_highlight_speakers`.
+    speaker_groups: dict[str, dict[str, list]] | None = None,
     vote_notes: dict[str, dict] | None = None,
     watch_starts: dict[str, dict] | None = None,
     # Maintainer's replacement wording for an off-agenda public-comment topic,
@@ -1142,6 +1247,10 @@ def render_recap(
     # list at the bottom of the page — the speakers and the item are the same
     # story. `_public_comment_section` is told which topics moved so its own
     # count stays honest.
+    speaker_line = _SpeakerLines(
+        public_comment, period_meetings, meeting_video, work_session_video,
+        speaker_quotes, speaker_quote_starts,
+    )
     pc_by_item = {
         t.item_number: t
         for t in (public_comment.by_item if public_comment else [])
@@ -1204,14 +1313,13 @@ def render_recap(
 
         if (topic := pc_by_item.get(s.item.number)):
             lines += _highlight_speakers(
-                topic, period_meetings, meeting_video, work_session_video,
+                topic, speaker_line, (speaker_groups or {}).get(s.item.number),
             )
 
     # --- Public comment on everything the highlights did not cover ---
     if public_comment and public_comment.total_speakers:
         lines += _public_comment_section(
-            public_comment, period_meetings,
-            meeting_video=meeting_video, work_session_video=work_session_video,
+            public_comment, period_meetings, speaker_line,
             moved=set(pc_by_item),
         )
 

@@ -1,0 +1,22 @@
+{
+  "numberdate": "20260901",
+  "name": "Call to Order & Closed Session beginning at 4:00 p.m., followed by the Open Session at 4:30 p.m.,",
+  "source": "diligent-worksession-pdf",
+  "upcoming_meetings": [
+    {
+      "name": "Regular Meeting",
+      "date": "9/15/2026",
+      "time": "Call to Order & Closed Session at 5:45 p.m. in Room 200; Open Session at 6:30 p.m. in the Auditorium",
+      "location": "Berkeley Middle School 1118 Ironbound Road, Williamsburg, VA"
+    },
+    {
+      "name": "Work Session & Action Items",
+      "date": "10/6/2026",
+      "time": "Call to Order & Closed Session at 4:00 p.m.; Open Session at 4:30 p.m.",
+      "location": "Rm. 300, School Board and Central Office Annex 117 Ironbound Road, Williamsburg, VA"
+    }
+  ],
+  "upcoming_events": [],
+  "role": "recap",
+  "public_comment_rule": ""
+}

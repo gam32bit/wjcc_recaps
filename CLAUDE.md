@@ -32,10 +32,19 @@ have to be honest and defensible to readers, not "our AI thinks these matter."
      district's own page in the packet — see `pdfslice.py`);
   2. counted tallies — public-comment speakers, vote counts — each speaker
      linked to their turn in the video, so the number of links IS the count.
-     Under a highlight the speakers are a flat list of timestamps and nothing
-     else: `pubcomment.group_subtopics` still labels and groups them into the
-     tally JSON, but the recap stopped printing those labels, because a
-     few-word description of two minutes of speech can only be checked by
+     Each speaker renders as `Speaker #N ([turn])` — N is their place in
+     that meeting's speaking order — plus, when the maintainer has put a
+     caption excerpt in `quotes-<period>.json`'s `speakers` block,
+     `: “excerpt” ([quote])`, the second link opening where the excerpt
+     begins (found deterministically in that speaker's own captions by
+     `pubcomment.locate_quote`; a miss prints `!` and drops the link, and
+     `quote_start` sets it by hand). A highlight's speakers can be split
+     into subgroups under a person's own headings via the same file's
+     `groups` block; ungrouped speakers fall under "Other speakers" and the
+     run flags them. The recap never prints a model label
+     beside a speaker: `pubcomment.group_subtopics` still labels and
+     groups them into the tally JSON, but the recap stopped printing those
+     labels, because a few-word description of two minutes of speech can only be checked by
      listening to the two minutes — which is what the timestamp beside it
      already offers. The model's words now reach the page in exactly one
      place, the off-agenda topic labels in "More Public Comment", and those

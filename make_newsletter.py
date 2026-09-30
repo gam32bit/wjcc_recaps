@@ -489,7 +489,7 @@ def _packet_paths(
 def _load_quotes(
     period: str,
 ) -> tuple[dict[str, dict], dict[str, dict], dict[str, dict], dict[str, dict],
-           dict[str, str]]:
+           dict[str, str], dict[str, dict[str, list]]]:
     """Maintainer-chosen quotes for this period, from `quotes-<period>.json`.
 
     Returns (one quote per agenda item, one excerpt per public-comment
@@ -506,7 +506,7 @@ def _load_quotes(
     path = PROJECT_DIR / f"quotes-{period}.json"
     if not path.is_file():
         print(f"  No {path.name} — rendering without quotes.")
-        return {}, {}, {}, {}, {}
+        return {}, {}, {}, {}, {}, {}
     data = json.loads(path.read_text())
     items = data.get("items", {})
     speakers = data.get("speakers", {})
@@ -517,11 +517,14 @@ def _load_quotes(
                     if not k.startswith("_")}
     topic_labels = {k.casefold(): v for k, v in data.get("topics", {}).items()
                     if not k.startswith("_")}
+    speaker_groups = {k: v for k, v in data.get("groups", {}).items()
+                      if not k.startswith("_")}
     n_speakers = sum(len(v) for v in speakers.values())
     print(f"  {len(items)} item quote(s), {n_speakers} speaker excerpt(s), "
           f"{len(vote_notes)} roll-call note(s), {len(watch_starts)} watch "
-          f"override(s) and {len(topic_labels)} topic label(s) from {path.name}.")
-    return items, speakers, vote_notes, watch_starts, topic_labels
+          f"override(s), {len(topic_labels)} topic label(s) and "
+          f"{len(speaker_groups)} item(s) grouped by subtopic from {path.name}.")
+    return items, speakers, vote_notes, watch_starts, topic_labels, speaker_groups
 
 
 def run_period(
@@ -580,6 +583,11 @@ def run_period(
     tallies: list[pubcomment.PublicCommentTally] = []
     all_speakers: list[pubcomment.Speaker] = []
     pc_ranges_by_meeting: dict[str, list[dict]] = {}
+    # Loaded before the transcript pass, not at render time: each speaker
+    # excerpt is located in its own meeting's captions while those are in hand.
+    (quotes, speaker_quotes, vote_notes, watch_starts, topic_labels,
+     speaker_groups) = _load_quotes(period)
+    quote_starts: dict[str, dict[float, float]] = {}
     for source in sorted(sources, key=lambda s: s.numberdate):
         if not source.video:
             print(f"\n  NOTE: no video for {source.label} — its discussion time "
@@ -631,6 +639,15 @@ def run_period(
             tallies.append(meeting_tally)
             all_speakers += speakers
             pc_ranges_by_meeting[source.numberdate] = pc_ranges
+            # Where each maintainer excerpt starts in the video, found in the
+            # captions it was copied from — see `pubcomment.locate_quote`.
+            found, problems = pubcomment.locate_speaker_quotes(
+                speaker_quotes.get(source.numberdate, {}),
+                speakers, snippets, pc_ranges,
+            )
+            quote_starts[source.numberdate] = found
+            for note in problems:
+                print(f"  ! {note}")
             sections += pubcomment.speaker_anchors(speakers, all_items)
             print(f"  {meeting_tally.total_speakers} public-comment speakers at "
                   f"{source.label}.")
@@ -690,6 +707,23 @@ def run_period(
             [r for rs in pc_ranges_by_meeting.values() for r in rs],
         ))
         print(f"  Wrote {path.relative_to(PROJECT_DIR)}")
+        # The groups are hand-written against a tally that a re-run can move,
+        # so say out loud when a key no longer lands on a counted speaker, or
+        # when a speaker on a grouped item is in no group.
+        for number, groups in speaker_groups.items():
+            topic = next((t for t in pc_tally.by_item
+                          if t.item_number == number), None)
+            counted = {a.start_seconds for a in topic.anchors} if topic else set()
+            grouped = set()
+            for label, keys in groups.items():
+                for key in keys:
+                    if float(key) not in counted:
+                        print(f"  ! groups[{number}][{label!r}]: no counted "
+                              f"speaker on that item starts at {key}s")
+                    grouped.add(float(key))
+            for start in sorted(counted - grouped):
+                print(f"  ! {number}: the speaker at {start:.0f}s is in no "
+                      "subtopic group — listed under 'Other speakers'")
 
     rubric_path = PROJECT_DIR / "rubric.md"
     if rubric_path.is_file():
@@ -716,7 +750,6 @@ def run_period(
     # --- Step 5: render + save ---
     ordered = sorted(sources, key=lambda s: s.numberdate)
     item_slices, attachment_slices = _packet_paths(ordered)
-    quotes, speaker_quotes, vote_notes, watch_starts, topic_labels = _load_quotes(period)
     body = render_recap(
         result.logistics,
         top_items,
@@ -735,9 +768,11 @@ def run_period(
         attachment_paths=attachment_slices,
         quotes=quotes,
         speaker_quotes=speaker_quotes,
+        speaker_quote_starts=quote_starts,
         vote_notes=vote_notes,
         watch_starts=watch_starts,
         topic_labels=topic_labels,
+        speaker_groups=speaker_groups,
     )
 
     score_path = OUT_DIR / f"recap-score-{period}.json"

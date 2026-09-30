@@ -17,6 +17,7 @@ out with a timestamp so a reviewer can seek the video and check the call.
 """
 
 import dataclasses
+import difflib
 import json
 import pathlib
 import re
@@ -412,6 +413,99 @@ def speaker_spans(
          speakers[n + 1].start_seconds if n + 1 < len(speakers) else period_end)
         for n, sp in enumerate(speakers)
     ]
+
+
+# Match only the opening of a quote: the first run of words before any elision,
+# and no more than this many of them. Enough to be unique within one speaker's
+# two minutes; short enough that an ASR slip later in a long sentence cannot
+# sink the match.
+_LOCATE_WORDS = 12
+# SequenceMatcher ratio a candidate has to clear. The quote IS the caption text
+# (quotes-<period>.json's rule), so a true hit scores near 1.0; this leaves room
+# for a bracketed correction or a filler word and nothing looser.
+_LOCATE_MIN_RATIO = 0.75
+
+
+def _locate_words(text: str) -> list[str]:
+    text = clean_caption_text(text).casefold()
+    return re.findall(r"[a-z0-9]+(?:'[a-z]+)?", text.replace("’", "'"))
+
+
+def locate_quote(
+    snippets: list[dict], text: str, start: float, end: float
+) -> float | None:
+    """Where in the recording a quoted caption excerpt begins, or None.
+
+    Deterministic: the excerpt is the video's own caption text, so this finds
+    it in the caption track between `start` and `end` — one speaker's turn, as
+    `speaker_spans` defines it, so two speakers who used the same phrase can't
+    trade anchors — and returns the start of the caption cue holding its first
+    word. A cue runs a few seconds, so the link can open a moment BEFORE the
+    first quoted word, never after it. No confident match returns None, and the
+    caller shows no link rather than a guessed one.
+    """
+    # The part of the quote up to its first elision; a leading ellipsis only
+    # marks that the quote joins mid-sentence.
+    lead = re.split(r"…|\.\.\.", re.sub(r"^\s*(…|\.\.\.)\s*", "", text))[0]
+    want = _locate_words(lead)[:_LOCATE_WORDS]
+    if not want:
+        return None
+    stream: list[tuple[str, float]] = [
+        (w, s["start"])
+        for s in snippets if start <= s["start"] < end
+        for w in _locate_words(s["text"])
+    ]
+    words = [w for w, _ in stream]
+    best, best_at = 0.0, None
+    for i in range(len(words)):
+        if words[i] != want[0] and (len(want) < 2 or words[i] != want[1]):
+            continue
+        ratio = difflib.SequenceMatcher(
+            None, want, words[i:i + len(want)], autojunk=False
+        ).ratio()
+        if ratio > best:
+            best, best_at = ratio, i
+    if best_at is None or best < _LOCATE_MIN_RATIO:
+        return None
+    return float(int(stream[best_at][1]))
+
+
+def locate_speaker_quotes(
+    excerpts: dict[str, dict],
+    speakers: list[Speaker],
+    snippets: list[dict],
+    pc_ranges: list[dict] | None,
+) -> tuple[dict[float, float], list[str]]:
+    """Where each maintainer excerpt for ONE meeting starts in its video.
+
+    `excerpts` is that meeting's slice of `quotes-<period>.json`'s `speakers`
+    block, keyed by the speaker's start_seconds ("2338" and "2338.0" both
+    work). Returns ({speaker start: quote start}, problems): an excerpt that
+    names no counted speaker, or whose text is not in that speaker's turn,
+    is reported and left out, so it renders without a quote link.
+    """
+    spans = {sp.start_seconds: span
+             for sp, span in zip(speakers, speaker_spans(speakers, pc_ranges))}
+    found: dict[float, float] = {}
+    problems: list[str] = []
+    for key, entry in excerpts.items():
+        if key.startswith("_"):
+            continue
+        try:
+            turn = float(key)
+        except ValueError:
+            problems.append(f"speaker key {key!r} is not a start_seconds")
+            continue
+        if turn not in spans:
+            problems.append(f"no counted speaker starts at {key}s")
+            continue
+        at = locate_quote(snippets, entry.get("text") or "", *spans[turn])
+        if at is None:
+            problems.append(f"excerpt for the speaker at {key}s is not in "
+                            "their captions — set quote_start by hand")
+            continue
+        found[turn] = at
+    return found, problems
 
 
 def tally(

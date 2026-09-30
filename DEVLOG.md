@@ -154,3 +154,19 @@ Split-vote no-votes can now be named in "Other Agenda Items" via a `nay`
 list in the `votes` block, matched to the recovered tally the same way
 absentees are. Aug 4 Personnel Actions: Kimberley Hundley, confirmed off
 the video at 1:18:32.
+
+## 2026-09-30 — Quote timestamps and hand-grouped speakers
+
+Each speaker's excerpt now gets a second link to where it is spoken, found by
+matching the excerpt against the captions of that speaker's own turn only
+(bounded by `speaker_spans`, not a fixed window — #4 and #9 both say "advances
+educational equity"). The link opens at the containing cue's start, so it can
+be a second early, never late; a miss prints `!` and drops the link rather than
+guess. Speakers are now always numbered, excerpt or not. Subgroups under a
+highlight come from a hand-written `groups` block, not from
+`group_subtopics`' model labels. Open: Speaker #25's turn anchor (4704s) lands
+on their closing line, so both links are identical — probably a late tally
+anchor; unverified. `render.py` still emits the pre-publication layout (three
+highlights, bold rather than H3 subgroup headings, "Watch this agenda item")
+rather than the shape Joseph published on Substack for September.
+`test_llmcache.py` errors at collection with or without this session's changes.
