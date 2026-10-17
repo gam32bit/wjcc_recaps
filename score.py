@@ -272,8 +272,9 @@ For each item return:
 
 Also return public_comment_period: the time range(s) covering the ENTIRE \
 public-comment portion of the meeting — every speaker, whether or not their \
-topic is on the agenda. Return an empty list if the transcript has no public-\
-comment period (for example a work session).
+topic is on the agenda. A public hearing, where members of the public address \
+the board, counts as public comment. Return an empty list if no member of the \
+public speaks (for example a work session without a public hearing).
 
 Rules:
 - Match by topic: use agenda item numbers and titles to find each topic.

@@ -72,6 +72,7 @@ DISCUSSION_TYPES = (
     "information/discussion",
     "proposed agenda item",
     "policies",
+    "public hearing",
 )
 
 _URL_RE = re.compile(r"(?:https?://|www\.)[^\s,;)]+", re.IGNORECASE)

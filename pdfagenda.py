@@ -51,6 +51,10 @@ _RECAP_SECTION_KEYWORDS = (
     "discussion",
     "polic",
     "proposed agenda",
+    # A public hearing has no details page, but it is where the public speaks
+    # on it: the Oct 6 2026 redistricting hearing was that meeting's whole
+    # public-comment period. Without the item, every speaker is off-agenda.
+    "hearing",
 )
 
 # Item Type strings, keyed off the section's own title. `triage.group_of` sorts
@@ -71,6 +75,7 @@ _TYPE_BY_SECTION_KEYWORD = (
     ("discussion", "Information/Discussion"),
     ("polic", "Policies"),
     ("proposed agenda", "Proposed Agenda Item"),
+    ("hearing", "Public Hearing"),
 )
 
 # How many pages after an item's own page to scan for the rest of its details
@@ -452,13 +457,19 @@ def build_items(
     # `sections=None` means "every substantive section, whatever it is numbered
     # in this packet" — the recap's rule. See `recap_sections`.
     chosen = recap_sections(entries) if sections is None else sections
-    wanted = [e for e in entries if e.section_num in chosen and e.page]
+    # An item needs a details page to have a body — except a public hearing,
+    # which never has one and is kept for the speakers it collects.
+    wanted = [e for e in entries if e.section_num in chosen
+              and (e.page or "hearing" in e.section.lower())]
 
     items: list[AgendaItem] = []
     decisions: list[dict] = []
     for entry in wanted:
-        raw = extract_text(pdf, entry.page, entry.page + DETAIL_SPAN, layout=False)
-        body = parse_detail(raw)
+        if entry.page:
+            raw = extract_text(pdf, entry.page, entry.page + DETAIL_SPAN, layout=False)
+            body = parse_detail(raw)
+        else:
+            body = ""
         status, destination, reason = routed_to(body)
 
         item_type = _item_type(entry.section)
@@ -518,7 +529,7 @@ def build_items(
             source_page=entry.page,
         ))
         if verbose:
-            print(f"  keep [{entry.number}] p.{entry.page:<5} "
+            print(f"  keep [{entry.number}] p.{entry.page or '-':<5} "
                   f"{entry.title[:46]:<48} {note}")
 
     return items, outline_text, decisions
