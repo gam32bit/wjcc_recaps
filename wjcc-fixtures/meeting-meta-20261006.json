@@ -1,0 +1,47 @@
+{
+  "numberdate": "20261006",
+  "name": "Call to Order & Closed Session beginning at 4:45 p.m. in Room 200, followed by the Open Session at 5:30 p.m. in the Auditorium",
+  "source": "diligent-worksession-pdf",
+  "upcoming_meetings": [
+    {
+      "name": "Joint Meeting",
+      "date": "10/9/2026",
+      "time": "8:30 a.m.",
+      "location": "Legacy Hall 4301 New Town Avenue, Williamsburg, VA"
+    },
+    {
+      "name": "Regular Meeting",
+      "date": "10/20/2026",
+      "time": "Call to Order & Closed Session at 6:00 p.m. in Room 200; Open Session at 6:30 p.m. in the Auditorium",
+      "location": "Berkeley Middle School 1118 Ironbound Road, Williamsburg, VA"
+    },
+    {
+      "name": "Work Session & Action Items",
+      "date": "11/10/2026",
+      "time": "Call to Order & Closed Session at 4:00 p.m.; Open Session at 4:30 p.m.",
+      "location": "Rm. 300, School Board and Central Office Annex 117 Ironbound Road, Williamsburg, VA"
+    }
+  ],
+  "upcoming_events": [
+    {
+      "name": "Special Education Advisory Committee",
+      "date": "10/14/2026",
+      "time": "5:00 p.m.",
+      "location": "James City County Recreation Center 5301 Longhill Road, Williamsburg, VA"
+    },
+    {
+      "name": "Policy Committee",
+      "date": "10/13/2026",
+      "time": "8:30 a.m.",
+      "location": "Rm. 209, School Board and Central Office 117 Ironbound Road, Williamsburg, VA"
+    },
+    {
+      "name": "Career Ready Advisory Committee",
+      "date": "10/21/2026",
+      "time": "3:30 p.m.",
+      "location": "Rm. 300, School Board and Central Office Annex 117 Ironbound Road, Williamsburg, VA"
+    }
+  ],
+  "role": "recap",
+  "public_comment_rule": ""
+}

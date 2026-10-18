@@ -40,10 +40,16 @@ the review's pages, so 8.07's attachment link comes out of 5.01's slice.
 import argparse
 import json
 import pathlib
+import re
 import subprocess
 import sys
 
 from pdfagenda import _ANY_LABEL_RE, extract_text
+
+# RECOMMENDED ACTION is the template's last label but not one of BODY_LABELS,
+# so a continuation page carrying only it — Oct 20 2026 item 9.06, p.58 — would
+# otherwise be cut into the attachments.
+_RECOMMENDED_ACTION_RE = re.compile(r"^[ \t]*RECOMMENDED ACTION\s*:", re.MULTILINE)
 
 PROJECT_DIR = pathlib.Path(__file__).resolve().parent
 # GitHub Pages serves from docs/ on the default branch. It has to be Pages and
@@ -90,7 +96,8 @@ def detail_range(pdf: pathlib.Path, first: int, hard_last: int) -> tuple[int, in
     """
     last = first
     for page in range(first + 1, min(hard_last, first + _MAX_DETAIL_PAGES) + 1):
-        if not _ANY_LABEL_RE.search(extract_text(pdf, page, page, layout=False)):
+        text = extract_text(pdf, page, page, layout=False)
+        if not (_ANY_LABEL_RE.search(text) or _RECOMMENDED_ACTION_RE.search(text)):
             break
         last = page
     return first, last
