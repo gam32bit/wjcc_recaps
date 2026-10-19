@@ -170,3 +170,18 @@ anchor; unverified. `render.py` still emits the pre-publication layout (three
 highlights, bold rather than H3 subgroup headings, "Watch this agenda item")
 rather than the shape Joseph published on Substack for September.
 `test_llmcache.py` errors at collection with or without this session's changes.
+
+## 2026-10-19 — October recap published; Whisper timestamps placed within passages
+
+Published: https://www.trackthetriangle.com/p/recap-wjcc-school-board-oct-6-work.
+Oct 6 had no YouTube captions, so its transcript is Whisper's 30–40s passages
+and every speaker/quote link opened at a passage start, ~25–35s early. Fixed by
+interpolating by character position inside the passage
+(`scripts/whisper_seek.py`), checked against two points read off the video
+(within 2s); links start 2s early on purpose. Least trustworthy where a passage
+is sparse — Speaker #12 follows a mic-feedback pause. The fix was applied by
+hand to the draft only: the pipeline still anchors Whisper meetings at passage
+starts, so the next captionless meeting needs this folded into
+`pubcomment.locate_quote` or done by hand again. Speaker links now open where
+the person starts talking, not where the clerk calls them. The Oct 20 HVAC
+proposals slice duplicates Oct 6's 6.04 (2.4 MB) — left as is.
