@@ -32,6 +32,7 @@ there they are the district's own record rather than a transcription of it.
 
 import dataclasses
 import json
+import re
 
 import anthropic
 
@@ -39,6 +40,54 @@ import llmcache
 
 from parse import AgendaItem, Vote
 from score import MODEL, compact_transcript
+
+
+_HONORIFIC = re.compile(r"^(?:mr|mrs|ms|miss|dr)\b")
+_ANSWER = re.compile(r"^(?:i|hi|aye|eye|ay|yes|yeah|no|nay|abstain|abstaining)\b")
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", re.sub(r"[^a-z ]+", " ", text.lower())).strip()
+
+
+def _unanswered(entry: dict, text: str) -> list[str]:
+    """Names in this roll call that the transcript never shows answering.
+
+    The chair hands the roll to the clerk by name — "Miss Aller." — and the
+    clerk's name then sits at the head of every roll call, where the model
+    lists it as one more aye. On Oct 20 2026 that made every unanimous vote
+    8-0 on a seven-member board. So each reported name is checked against the
+    roll call's own text: it is kept if ANY mention of it is followed by an
+    answer ("I", "Hi", "Aye", "No", "Abstain" ...), and dropped only when every
+    mention runs straight into the next name's honorific. A name that cannot
+    be found at all is kept — this removes a voice only on positive evidence.
+    """
+    norm = _norm(text)
+    dropped = []
+    for name in (entry.get("aye") or []) + (entry.get("nay") or []) + (
+        entry.get("abstain") or []
+    ):
+        needle = _norm(name)
+        hits = [m.end() for m in re.finditer(rf"\b{re.escape(needle)}\b", norm)]
+        if not hits:
+            continue
+        # A mention at the very end of the window has nothing after it to judge.
+        follows = [f for f in (norm[end:].lstrip() for end in hits) if f]
+        if not follows or any(_ANSWER.match(f) for f in follows):
+            continue
+        if all(_HONORIFIC.match(f) for f in follows):
+            dropped.append(name)
+    return dropped
+
+
+def _roll_text(entry: dict, raw: list[dict], snippets: list[dict]) -> str:
+    """Transcript text from this roll call's start to the next one's."""
+    start = float(entry.get("start_seconds") or 0)
+    later = [float(e.get("start_seconds") or 0) for e in raw
+             if float(e.get("start_seconds") or 0) > start]
+    end = min(later) if later else float("inf")
+    return " ".join(s["text"] for s in snippets
+                    if start - 5 <= s["start"] < end + 30)
 
 
 def _seated(raw: list[dict]) -> int:
@@ -159,7 +208,8 @@ def extract(
 
 
 def to_votes(
-    raw: list[dict], items: list[AgendaItem], *, verbose: bool = True
+    raw: list[dict], items: list[AgendaItem], *,
+    snippets: list[dict] | None = None, verbose: bool = True,
 ) -> tuple[dict[str, Vote], list[str]]:
     """Turn raw roll calls into `Vote` records, keyed by item number.
 
@@ -168,10 +218,30 @@ def to_votes(
     Returns `(votes_by_number, warnings)` — a warning is raised rather than a
     silent correction, because a roll call whose arithmetic does not work is a
     transcription problem for a human to look at, not something to guess at.
+
+    Given the transcript `snippets`, a name the transcript never shows
+    answering is first removed from its list (see `_unanswered`) and the
+    removal is recorded as a warning. `raw` itself is left as the model
+    reported it, so the audit JSON still shows what was heard.
     """
     known = {i.number for i in items if i.number}
     votes: dict[str, Vote] = {}
     warnings: list[str] = []
+    if snippets:
+        cleaned = []
+        for entry in raw:
+            dropped = _unanswered(entry, _roll_text(entry, raw, snippets))
+            if dropped:
+                warnings.append(
+                    f"roll call at {entry.get('start_seconds', 0):.0f}s: "
+                    f"{', '.join(dropped)} never answered — not counted"
+                )
+                entry = {**entry, **{
+                    k: [n for n in (entry.get(k) or []) if n not in dropped]
+                    for k in ("aye", "nay", "abstain")
+                }}
+            cleaned.append(entry)
+        raw = cleaned
     seated = _seated(raw)
     if verbose and seated:
         print(f"  {seated} members answered the fullest roll call of this meeting.")

@@ -680,7 +680,7 @@ def run_period(
         mine = [i for i in all_items
                 if i.number.partition("-")[0] == source.prefix]
         raw = votes.extract(mine, snippets, client)
-        recovered, warnings = votes.to_votes(raw, mine)
+        recovered, warnings = votes.to_votes(raw, mine, snippets=snippets)
         landed = votes.apply_to_items(recovered, mine)
         for note in warnings:
             print(f"  ! {note}")

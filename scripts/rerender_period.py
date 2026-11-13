@@ -62,7 +62,8 @@ for src in sources:
         continue
     raw = json.loads(path.read_text())["roll_calls"]
     mine = [i for i in all_items if i.number.partition("-")[0] == src.prefix]
-    recovered, _ = votes.to_votes(raw, mine)
+    snippets = mn.fetch_transcript(src.video, cache_dir=mn.CACHE_DIR)
+    recovered, _ = votes.to_votes(raw, mine, snippets=snippets)
     votes.apply_to_items(recovered, mine)
 
 # Public comment: saved speakers, re-tallied against the cached transcripts so
